@@ -1,3 +1,6 @@
 <resources>
     <string name="app_name">allRecorder</string>
+    <string name="tab_conversations">Conversations</string>
+    <string name="tab_recordings">Recordings</string>
+    <string name="action_group_conversations">Group Conversations</string>
 </resources>

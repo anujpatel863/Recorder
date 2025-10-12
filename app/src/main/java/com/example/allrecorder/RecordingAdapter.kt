@@ -24,24 +24,26 @@ class RecordingAdapter(
 
     var currentlyPlayingId: Long? = null
     var currentProgress: Int = 0
+    var isPlaying: Boolean = false
 
-    fun setPlaybackState(playingId: Long?, progress: Int) {
+    fun setPlaybackState(playingId: Long?, progress: Int, isPlaying: Boolean) {
         val previousPlayingId = currentlyPlayingId
         currentlyPlayingId = playingId
         currentProgress = progress
+        this.isPlaying = isPlaying
 
-        // Notify previous item to update its UI (e.g., hide pause button)
-        if (previousPlayingId != null) {
+        // Notify previous item to update its UI if it's different from the new one
+        if (previousPlayingId != null && previousPlayingId != playingId) {
             val oldPosition = currentList.indexOfFirst { it.id == previousPlayingId }
             if (oldPosition != -1) notifyItemChanged(oldPosition)
         }
+
         // Notify new item to update its UI
         if (playingId != null) {
             val newPosition = currentList.indexOfFirst { it.id == playingId }
-            if (newPosition != -1) notifyItemChanged(newPosition, progress)
+            if (newPosition != -1) notifyItemChanged(newPosition)
         }
     }
-
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecordingViewHolder {
         val binding = ItemRecordingBinding.inflate(LayoutInflater.from(parent.context), parent, false)
@@ -50,19 +52,18 @@ class RecordingAdapter(
 
     override fun onBindViewHolder(holder: RecordingViewHolder, position: Int) {
         val recording = getItem(position)
-        val isPlaying = recording.id == currentlyPlayingId
-        holder.bind(recording, isPlaying, currentProgress, onPlayClicked, onPauseClicked, onEditClicked, onDeleteClicked)
+        val isCurrentlyActive = recording.id == currentlyPlayingId
+        holder.bind(
+            recording,
+            isCurrentlyActive,
+            isPlaying,
+            currentProgress,
+            onPlayClicked,
+            onPauseClicked,
+            onEditClicked,
+            onDeleteClicked
+        )
     }
-
-    override fun onBindViewHolder(holder: RecordingViewHolder, position: Int, payloads: MutableList<Any>) {
-        if (payloads.isNotEmpty()) {
-            val progress = payloads[0] as Int
-            holder.updateProgress(progress)
-        } else {
-            super.onBindViewHolder(holder, position, payloads)
-        }
-    }
-
 
     class RecordingViewHolder(
         private val binding: ItemRecordingBinding,
@@ -71,6 +72,7 @@ class RecordingAdapter(
 
         fun bind(
             recording: Recording,
+            isCurrentlyActive: Boolean,
             isPlaying: Boolean,
             progress: Int,
             onPlayClicked: (Recording) -> Unit,
@@ -82,12 +84,18 @@ class RecordingAdapter(
             binding.tvTimestamp.text = formatDate(recording.startTime)
             binding.tvDuration.text = formatDuration(recording.duration)
             binding.seekBar.max = recording.duration.toInt()
-            binding.seekBar.progress = if (isPlaying) progress else 0
 
-            if (isPlaying) {
-                binding.btnPlay.visibility = View.GONE
-                binding.btnPause.visibility = View.VISIBLE
+            if (isCurrentlyActive) {
+                binding.seekBar.progress = progress
+                if (isPlaying) {
+                    binding.btnPlay.visibility = View.GONE
+                    binding.btnPause.visibility = View.VISIBLE
+                } else {
+                    binding.btnPlay.visibility = View.VISIBLE
+                    binding.btnPause.visibility = View.GONE
+                }
             } else {
+                binding.seekBar.progress = 0
                 binding.btnPlay.visibility = View.VISIBLE
                 binding.btnPause.visibility = View.GONE
             }
@@ -98,17 +106,13 @@ class RecordingAdapter(
             binding.btnDelete.setOnClickListener { onDeleteClicked(recording) }
             binding.seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                    if (fromUser) {
+                    if (fromUser && isCurrentlyActive) {
                         onSeekBarChanged(progress)
                     }
                 }
                 override fun onStartTrackingTouch(seekBar: SeekBar?) {}
                 override fun onStopTrackingTouch(seekBar: SeekBar?) {}
             })
-        }
-
-        fun updateProgress(progress: Int) {
-            binding.seekBar.progress = progress
         }
 
         private fun formatDate(timestamp: Long): String {

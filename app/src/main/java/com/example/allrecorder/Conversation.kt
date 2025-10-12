@@ -9,5 +9,6 @@ data class Conversation(
     val id: Long = 0,
     val title: String,
     val startTime: Long,
-    var endTime: Long
+    var endTime: Long,
+    val speakerCount: Int = 0
 )

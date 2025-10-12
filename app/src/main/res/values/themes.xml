@@ -22,6 +22,10 @@
 
     <style name="Theme.AllRecorder" parent="Base.Theme.AllRecorder" />
 
+    <style name="Theme.AllRecorder.AppBarOverlay" parent="ThemeOverlay.AppCompat.Dark.ActionBar" />
+    <style name="Theme.AllRecorder.PopupOverlay" parent="ThemeOverlay.AppCompat.Light" />
+
+
     <!-- Custom Component Styles for Retro Theme -->
     <style name="Widget.App.CardView" parent="Widget.Material3.CardView.Elevated">
         <item name="cardBackgroundColor">@color/retro_card_background</item>

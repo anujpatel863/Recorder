@@ -17,5 +17,7 @@ interface ConversationDao {
 
     @Query("SELECT * FROM conversations ORDER BY startTime DESC")
     fun getAllConversations(): Flow<List<Conversation>>
-}
 
+    @Query("SELECT * FROM conversations WHERE id = :conversationId")
+    fun getConversationById(conversationId: Long): Flow<Conversation>
+}

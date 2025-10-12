@@ -21,6 +21,12 @@
         android:theme="@style/Theme.AllRecorder"
         tools:targetApi="31">
 
+        <!-- Declare the Conversation Detail Activity -->
+        <activity
+            android:name=".ConversationDetailActivity"
+            android:exported="false"
+            android:parentActivityName=".MainActivity" />
+
         <!-- Declare the Foreground Service -->
         <service
             android:name=".RecordingService"

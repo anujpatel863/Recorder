@@ -9,37 +9,48 @@ import com.example.allrecorder.databinding.ItemConversationBinding
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 
-class ConversationAdapter : ListAdapter<Conversation, ConversationAdapter.ConversationViewHolder>(ConversationDiffCallback()) {
+class ConversationAdapter(
+    private val onItemClicked: (Conversation) -> Unit
+) : ListAdapter<Conversation, ConversationAdapter.ConversationViewHolder>(ConversationDiffCallback()) {
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ConversationViewHolder {
         val binding = ItemConversationBinding.inflate(LayoutInflater.from(parent.context), parent, false)
-        return ConversationViewHolder(binding)
+        return ConversationViewHolder(binding, onItemClicked)
     }
 
     override fun onBindViewHolder(holder: ConversationViewHolder, position: Int) {
-        val conversation = getItem(position)
-        holder.bind(conversation)
+        holder.bind(getItem(position))
     }
 
-    class ConversationViewHolder(private val binding: ItemConversationBinding) : RecyclerView.ViewHolder(binding.root) {
-        private val timeFormat = SimpleDateFormat("h:mm a", Locale.getDefault())
+    class ConversationViewHolder(
+        private val binding: ItemConversationBinding,
+        private val onItemClicked: (Conversation) -> Unit
+    ) : RecyclerView.ViewHolder(binding.root) {
 
         fun bind(conversation: Conversation) {
             binding.tvConversationTitle.text = conversation.title
-            val startTime = timeFormat.format(Date(conversation.startTime))
-            val endTime = timeFormat.format(Date(conversation.endTime))
+            val startTime = formatTime(conversation.startTime)
+            val endTime = formatTime(conversation.endTime)
             binding.tvConversationTimeRange.text = "$startTime - $endTime"
+            binding.tvSpeakerCount.text = "Speakers: ${conversation.speakerCount}"
+
+            itemView.setOnClickListener {
+                onItemClicked(conversation)
+            }
+        }
+
+        private fun formatTime(timestamp: Long): String {
+            return SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(timestamp))
         }
     }
 }
 
 class ConversationDiffCallback : DiffUtil.ItemCallback<Conversation>() {
-    override fun areItemsTheSame(oldItem: Conversation, newItem: Conversation): Boolean {
-        return oldItem.id == newItem.id
-    }
+    override fun areItemsTheSame(oldItem: Conversation, newItem: Conversation): Boolean =
+        oldItem.id == newItem.id
 
-    override fun areContentsTheSame(oldItem: Conversation, newItem: Conversation): Boolean {
-        return oldItem == newItem
-    }
+    override fun areContentsTheSame(oldItem: Conversation, newItem: Conversation): Boolean =
+        oldItem == newItem
 }

@@ -14,6 +14,8 @@ import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import java.io.IOException
 import java.text.SimpleDateFormat
@@ -28,24 +30,39 @@ class RecordingService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
     private lateinit var recordingDao: RecordingDao
 
-    // Handler for reliable periodic tasks
     private lateinit var handler: Handler
     private var recordingStartTime: Long = 0L
+    private var sessionStartTime: Long = 0L
 
-    private val recordingRunnable = Runnable {
-        // Stop the previous recording
-        stopAndSaveRecording(recordingStartTime)
-
-        // Start the new one and schedule the next
-        startNewRecordingAndScheduleNext()
+    private val recordingRunnable = object : Runnable {
+        override fun run() {
+            stopAndSaveRecording()
+            startNewRecording()
+            handler.postDelayed(this, recordingDurationMillis)
+        }
     }
 
-    private val recordingDurationMillis = 30 * 1000L // 30 seconds for testing
+    private val timerRunnable = object : Runnable {
+        override fun run() {
+            if (_isRecording.value) {
+                _elapsedTime.value = System.currentTimeMillis() - sessionStartTime
+                handler.postDelayed(this, 1000)
+            }
+        }
+    }
+
+    private val recordingDurationMillis = 30 * 1000L
 
     companion object {
         private const val NOTIFICATION_CHANNEL_ID = "RecordingServiceChannel"
         private const val NOTIFICATION_ID = 1
         private const val TAG = "RecordingService"
+
+        private val _isRecording = MutableStateFlow(false)
+        val isRecording = _isRecording.asStateFlow()
+
+        private val _elapsedTime = MutableStateFlow(0L)
+        val elapsedTime = _elapsedTime.asStateFlow()
     }
 
     override fun onCreate() {
@@ -56,25 +73,22 @@ class RecordingService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val notification = createNotification()
-        startForeground(NOTIFICATION_ID, notification)
-
+        startForeground(NOTIFICATION_ID, createNotification())
         Log.d(TAG, "Recording service started.")
-        // Remove any existing callbacks to prevent duplicates if service is restarted
-        handler.removeCallbacks(recordingRunnable)
-        // Start the first recording immediately
-        startNewRecordingAndScheduleNext()
+
+        _isRecording.value = true
+        sessionStartTime = System.currentTimeMillis()
+        _elapsedTime.value = 0L // Reset timer on start
+        handler.post(timerRunnable)
+
+        startNewRecording()
+        handler.postDelayed(recordingRunnable, recordingDurationMillis)
 
         return START_STICKY
     }
 
-    private fun startNewRecordingAndScheduleNext() {
-        recordingStartTime = System.currentTimeMillis()
-        startNewRecording()
-        handler.postDelayed(recordingRunnable, recordingDurationMillis)
-    }
-
     private fun startNewRecording() {
+        recordingStartTime = System.currentTimeMillis()
         currentFilePath = getOutputFilePath()
         mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             MediaRecorder(this)
@@ -84,61 +98,63 @@ class RecordingService : Service() {
         }
 
         mediaRecorder?.apply {
-            setAudioSource(MediaRecorder.AudioSource.MIC)
-            setOutputFormat(MediaRecorder.OutputFormat.AAC_ADTS)
-            setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            setOutputFile(currentFilePath)
             try {
+                setAudioSource(MediaRecorder.AudioSource.MIC)
+                setOutputFormat(MediaRecorder.OutputFormat.AAC_ADTS)
+                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                setOutputFile(currentFilePath)
                 prepare()
                 start()
                 Log.d(TAG, "Started recording to: $currentFilePath")
-            } catch (e: IOException) {
-                Log.e(TAG, "MediaRecorder prepare() failed", e)
-            } catch (e: IllegalStateException) {
-                Log.e(TAG, "MediaRecorder start() failed", e)
+            } catch (e: Exception) {
+                Log.e(TAG, "MediaRecorder setup failed. Cleaning up.", e)
+                // Cleanup on failure
+                releaseRecorder()
             }
         }
     }
 
-    private fun stopAndSaveRecording(startTime: Long) {
-        // Check if recorder is even active
-        if (mediaRecorder == null || startTime == 0L) return
-
-        mediaRecorder?.apply {
-            try {
-                stop()
-                release()
-                Log.d(TAG, "Stopped and released MediaRecorder.")
-            } catch (e: RuntimeException) {
-                // This can happen if stop() is called after an error.
-                Log.w(TAG, "RuntimeException on stopping MediaRecorder. Possibly already stopped.", e)
-            }
-        }
-        mediaRecorder = null
+    private fun stopAndSaveRecording() {
+        if (mediaRecorder == null) return
 
         val endTime = System.currentTimeMillis()
-        val duration = endTime - startTime
+        val duration = endTime - recordingStartTime
         val filePath = currentFilePath
-        if (filePath != null) {
+
+        releaseRecorder()
+
+        // Only save if the recording is a valid length
+        if (filePath != null && duration > 500) { // e.g., longer than 0.5s
             val recording = Recording(
                 filePath = filePath,
-                startTime = startTime,
+                startTime = recordingStartTime,
                 duration = duration
             )
-            // Use the service scope for this DB operation
             serviceScope.launch {
                 recordingDao.insert(recording)
-                Log.d(TAG, "Saved recording entry to database: $filePath")
+                Log.d(TAG, "Saved recording chunk: $filePath")
             }
         }
         currentFilePath = null
     }
 
+    private fun releaseRecorder() {
+        if (mediaRecorder == null) return
+        try {
+            mediaRecorder?.stop()
+            mediaRecorder?.release()
+        } catch (e: RuntimeException) {
+            Log.w(TAG, "RuntimeException on stopping MediaRecorder. File may be corrupted.", e)
+            currentFilePath?.let { File(it).delete() } // Delete corrupted file
+        } finally {
+            mediaRecorder = null
+        }
+    }
+
+
     private fun getOutputFilePath(): String {
         val outputDir = File(filesDir, "audio_chunks")
-        if (!outputDir.exists()) {
-            outputDir.mkdirs()
-        }
+        if (!outputDir.exists()) outputDir.mkdirs()
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
         return File(outputDir, "AUDIO_$timeStamp.aac").absolutePath
     }
@@ -148,38 +164,38 @@ class RecordingService : Service() {
             val serviceChannel = NotificationChannel(
                 NOTIFICATION_CHANNEL_ID,
                 "Recording Service Channel",
-                NotificationManager.IMPORTANCE_DEFAULT
+                NotificationManager.IMPORTANCE_LOW
             )
-            val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(serviceChannel)
+            getSystemService(NotificationManager::class.java).createNotificationChannel(serviceChannel)
         }
     }
 
     private fun createNotification(): Notification {
         val notificationIntent = Intent(this, MainActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(
-            this, 0, notificationIntent, PendingIntent.FLAG_IMMUTABLE
+            this, 0, notificationIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setContentTitle("Audio Recorder Active")
-            .setContentText("Recording audio in the background.")
-            .setSmallIcon(R.drawable.ic_launcher_foreground) // Replace with your own icon
+            .setContentTitle("Recorder Active")
+            .setContentText("Monitoring audio in the background.")
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentIntent(pendingIntent)
             .build()
     }
 
-
     override fun onDestroy() {
         super.onDestroy()
         Log.d(TAG, "Recording service destroyed.")
-        handler.removeCallbacks(recordingRunnable) // Stop the loop
-        stopAndSaveRecording(recordingStartTime) // Attempt to save the last chunk
-        serviceJob.cancel() // Cancel all coroutines in this scope
+        handler.removeCallbacks(recordingRunnable)
+        handler.removeCallbacks(timerRunnable)
+        stopAndSaveRecording()
+        serviceJob.cancel()
+        _isRecording.value = false
+        _elapsedTime.value = 0L
     }
 
-    override fun onBind(intent: Intent?): IBinder? {
-        return null
-    }
+    override fun onBind(intent: Intent?): IBinder? = null
 }
 

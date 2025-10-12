@@ -1,17 +1,19 @@
 package com.example.allrecorder
 
 import android.content.Context
-import android.media.MediaExtractor
-import android.media.MediaFormat
 import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import androidx.work.workDataOf
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.IOException
-import java.nio.ByteBuffer
+import org.tensorflow.lite.Interpreter
+import java.io.FileInputStream
+import java.nio.MappedByteBuffer
+import java.nio.channels.FileChannel
 import java.text.SimpleDateFormat
 import java.util.*
+import kotlin.math.sqrt
 
 class DiarizationWorker(
     appContext: Context,
@@ -20,16 +22,33 @@ class DiarizationWorker(
 
     private val recordingDao = AppDatabase.getDatabase(appContext).recordingDao()
     private val conversationDao = AppDatabase.getDatabase(appContext).conversationDao()
+    private val speakerInterpreter: Interpreter
 
     companion object {
         const val WORK_NAME = "DiarizationWorker"
         private const val TAG = "DiarizationWorker"
-        // Amplitude threshold to decide if a chunk is "silent". This needs tuning.
-        private const val SILENCE_THRESHOLD = 300
+        private const val SIMILARITY_THRESHOLD = 0.85 // Increased for better speaker grouping
+        private const val SILENCE_EMBEDDING_THRESHOLD = 10.0 // Threshold for silence detection
+        const val PROGRESS = "PROGRESS"
+    }
+
+    init {
+        // We will only use the speaker identification model
+        speakerInterpreter = Interpreter(loadModelFile("conformer_tisid_small.tflite"))
+    }
+
+    private fun loadModelFile(modelName: String): MappedByteBuffer {
+        val fileDescriptor = applicationContext.assets.openFd(modelName)
+        val inputStream = FileInputStream(fileDescriptor.fileDescriptor)
+        return inputStream.channel.map(
+            FileChannel.MapMode.READ_ONLY,
+            fileDescriptor.startOffset,
+            fileDescriptor.declaredLength
+        )
     }
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
-        Log.d(TAG, "Worker started.")
+        Log.d(TAG, "Diarization worker started.")
         try {
             val unprocessedRecordings = recordingDao.getUnprocessedRecordings()
             if (unprocessedRecordings.isEmpty()) {
@@ -38,130 +57,115 @@ class DiarizationWorker(
             }
 
             Log.d(TAG, "Processing ${unprocessedRecordings.size} recordings.")
+            setProgress(workDataOf(PROGRESS to 0))
 
-            val processedRecordings = unprocessedRecordings.map { recording ->
-                val hasSpeech = analyzeRecordingForSpeech(recording.filePath)
-                val speakerLabel = if (hasSpeech) "SPEECH_DETECTED" else "SILENCE"
-                recording.copy(speakerLabels = speakerLabel, isProcessed = true)
+            // Step 1: Process all recordings to get embeddings or mark as silent
+            val processedRecordings = unprocessedRecordings.mapIndexed { index, recording ->
+                val embedding = getSpeakerEmbedding(recording.filePath)
+                val isSilent = isSilent(embedding)
+                val progress = ((index + 1) * 100) / unprocessedRecordings.size
+                setProgress(workDataOf(PROGRESS to progress))
+
+                if (isSilent) {
+                    recording.copy(speakerLabels = "SILENCE", isProcessed = true)
+                } else {
+                    recording.copy(speakerLabels = embedding.joinToString(","), isProcessed = true)
+                }
             }
 
+            // Step 2: Group the processed recordings into conversations
             groupIntoConversations(processedRecordings)
-
+            setProgress(workDataOf(PROGRESS to 100))
             Result.success()
         } catch (e: Exception) {
-            Log.e(TAG, "Worker failed", e)
+            Log.e(TAG, "Diarization worker failed", e)
             Result.failure()
         }
     }
 
-    private suspend fun groupIntoConversations(processedRecordings: List<Recording>) {
-        var currentConversation: Conversation? = null
-        val recordingsInCurrentConversation = mutableListOf<Recording>()
-
-        for (recording in processedRecordings) {
-            val isSilent = recording.speakerLabels == "SILENCE"
-
-            if (!isSilent) {
-                // This chunk contains speech
-                if (currentConversation == null) {
-                    // Start of a new conversation
-                    val title = "Conversation from ${formatDate(recording.startTime)}"
-                    val newConversation = Conversation(
-                        title = title,
-                        startTime = recording.startTime,
-                        endTime = recording.startTime + recording.duration
-                    )
-                    val newConversationId = conversationDao.insert(newConversation)
-                    currentConversation = newConversation.copy(id = newConversationId)
-                }
-
-                // Add recording to the current conversation
-                recording.conversationId = currentConversation.id
-                recordingsInCurrentConversation.add(recording)
-
-                // Update conversation end time
-                currentConversation.endTime = recording.startTime + recording.duration
-
-            } else {
-                // This chunk is silent, so the conversation ends
-                if (currentConversation != null) {
-                    conversationDao.update(currentConversation)
-                    recordingDao.updateRecordings(recordingsInCurrentConversation)
-                    currentConversation = null
-                    recordingsInCurrentConversation.clear()
-                }
-                // Also update the silent recording as processed
-                recordingDao.update(recording)
-            }
-        }
-
-        // Save the last conversation if it exists
-        if (currentConversation != null) {
-            conversationDao.update(currentConversation)
-            recordingDao.updateRecordings(recordingsInCurrentConversation)
-        }
+    private fun isSilent(embedding: FloatArray): Boolean {
+        // Calculate the magnitude of the embedding. Silent audio has a low magnitude.
+        val norm = sqrt(embedding.sumOf { (it * it).toDouble() }).toFloat()
+        Log.d(TAG, "Calculated embedding norm: $norm")
+        return norm < SILENCE_EMBEDDING_THRESHOLD
     }
 
-    /**
-     * Placeholder for a real diarization model.
-     * This implementation uses a simple amplitude check to detect silence.
-     * Returns true if speech is detected, false otherwise.
-     */
-    private fun analyzeRecordingForSpeech(filePath: String): Boolean {
-        var extractor: MediaExtractor? = null
+    private fun getSpeakerEmbedding(filePath: String): FloatArray {
+        // TODO: Replace this with actual audio preprocessing.
+        // The model expects a 1-second audio clip at 16kHz.
+        val inputBuffer = Array(1) { FloatArray(16000) }
+        val outputBuffer = Array(1) { FloatArray(512) }
         try {
-            extractor = MediaExtractor()
-            extractor.setDataSource(filePath)
+            speakerInterpreter.run(inputBuffer, outputBuffer)
+        } catch (e: Exception) {
+            Log.e(TAG, "TFLite interpreter failed for file: $filePath", e)
+        }
+        return outputBuffer[0]
+    }
 
-            val trackIndex = selectAudioTrack(extractor)
-            if (trackIndex < 0) return false
-            extractor.selectTrack(trackIndex)
+    private suspend fun groupIntoConversations(recordings: List<Recording>) {
+        val speechChunks = recordings.filter { it.speakerLabels != "SILENCE" }
+        val silentChunks = recordings.filter { it.speakerLabels == "SILENCE" }
+        recordingDao.updateRecordings(silentChunks) // Update silent chunks as processed
 
-            val buffer = ByteBuffer.allocate(1024 * 16)
-            var totalAmplitude: Long = 0
-            var sampleCount: Long = 0
+        var currentConversationChunks = mutableListOf<Recording>()
+        var lastSpeakerEmbedding: FloatArray? = null
 
-            while (true) {
-                val sampleSize = extractor.readSampleData(buffer, 0)
-                if (sampleSize < 0) break
+        for (chunk in speechChunks) {
+            val currentEmbedding = chunk.speakerLabels!!.split(',').map { it.toFloat() }.toFloatArray()
 
-                for (i in 0 until sampleSize step 2) { // Assuming 16-bit audio (2 bytes per sample)
-                    if (i + 1 < sampleSize) {
-                        val sample = buffer.getShort(i)
-                        totalAmplitude += Math.abs(sample.toInt())
-                        sampleCount++
-                    }
-                }
-                extractor.advance()
+            if (lastSpeakerEmbedding == null || cosineSimilarity(lastSpeakerEmbedding, currentEmbedding) > SIMILARITY_THRESHOLD) {
+                // Same speaker or first speaker, add to current conversation
+                currentConversationChunks.add(chunk)
+            } else {
+                // Different speaker, finalize the previous conversation
+                finalizeConversation(currentConversationChunks)
+                // Start a new conversation with the current chunk
+                currentConversationChunks = mutableListOf(chunk)
             }
+            lastSpeakerEmbedding = currentEmbedding
+        }
 
-            if (sampleCount == 0L) return false
-            val averageAmplitude = totalAmplitude / sampleCount
-            Log.d(TAG, "File: $filePath, Avg Amplitude: $averageAmplitude")
-            return averageAmplitude > SILENCE_THRESHOLD
-
-        } catch (e: IOException) {
-            Log.e(TAG, "Failed to analyze file: $filePath", e)
-            return false // Treat errors as silence to be safe
-        } finally {
-            extractor?.release()
+        // Finalize any remaining conversation
+        if (currentConversationChunks.isNotEmpty()) {
+            finalizeConversation(currentConversationChunks)
         }
     }
 
-    private fun selectAudioTrack(extractor: MediaExtractor): Int {
-        for (i in 0 until extractor.trackCount) {
-            val format: MediaFormat = extractor.getTrackFormat(i)
-            val mime = format.getString(MediaFormat.KEY_MIME)
-            if (mime?.startsWith("audio/") == true) {
-                return i
+    private suspend fun finalizeConversation(chunks: List<Recording>) {
+        if (chunks.isEmpty()) return
+
+        // Identify unique speakers in this conversation
+        val uniqueSpeakers = mutableListOf<FloatArray>()
+        chunks.forEach { chunk ->
+            val embedding = chunk.speakerLabels!!.split(',').map { it.toFloat() }.toFloatArray()
+            if (uniqueSpeakers.none { cosineSimilarity(it, embedding) > SIMILARITY_THRESHOLD }) {
+                uniqueSpeakers.add(embedding)
             }
         }
-        return -1
+
+        val firstChunk = chunks.first()
+        val lastChunk = chunks.last()
+        val conversation = Conversation(
+            title = "Conversation at ${formatDate(firstChunk.startTime)}",
+            startTime = firstChunk.startTime,
+            endTime = lastChunk.startTime + lastChunk.duration,
+            speakerCount = uniqueSpeakers.size
+        )
+        val conversationId = conversationDao.insert(conversation)
+        chunks.forEach { it.conversationId = conversationId }
+        recordingDao.updateRecordings(chunks)
+    }
+
+    private fun cosineSimilarity(vec1: FloatArray, vec2: FloatArray): Float {
+        val dotProduct = vec1.zip(vec2).sumOf { (a, b) -> (a * b).toDouble() }.toFloat()
+        val normA = sqrt(vec1.sumOf { (it * it).toDouble() }).toFloat()
+        val normB = sqrt(vec2.sumOf { (it * it).toDouble() }).toFloat()
+        return if (normA == 0f || normB == 0f) 0f else dotProduct / (normA * normB)
     }
 
     private fun formatDate(timestamp: Long): String {
-        val date = Date(timestamp)
-        val format = SimpleDateFormat("MMM dd, h:mm a", Locale.getDefault())
-        return format.format(date)
+        return SimpleDateFormat("MMM dd, h:mm a", Locale.getDefault()).format(Date(timestamp))
     }
 }
+

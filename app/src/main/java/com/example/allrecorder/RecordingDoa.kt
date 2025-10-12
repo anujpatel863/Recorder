@@ -27,5 +27,7 @@ interface RecordingDao {
 
     @Query("SELECT * FROM recordings WHERE isProcessed = 0 ORDER BY startTime ASC")
     suspend fun getUnprocessedRecordings(): List<Recording>
-}
 
+    @Query("SELECT * FROM recordings WHERE conversationId = :conversationId ORDER BY startTime ASC")
+    fun getRecordingsForConversation(conversationId: Long): Flow<List<Recording>>
+}
