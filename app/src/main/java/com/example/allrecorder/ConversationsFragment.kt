@@ -39,7 +39,7 @@ class ConversationsFragment : Fragment() {
             conversations?.let {
                 conversationAdapter.submitList(it)
             }
-        })
+         })
     }
 
     private fun setupRecyclerView() {
