@@ -325,13 +325,16 @@ class DiarizationWorker(
     }
 
     private fun loadModelFile(modelName: String): MappedByteBuffer {
-        val fileDescriptor = applicationContext.assets.openFd(modelName)
-        val inputStream = FileInputStream(fileDescriptor.fileDescriptor)
-        return inputStream.channel.map(
-            FileChannel.MapMode.READ_ONLY,
-            fileDescriptor.startOffset,
-            fileDescriptor.declaredLength
-        )
+        applicationContext.assets.openFd(modelName).use { fileDescriptor ->
+            FileInputStream(fileDescriptor.fileDescriptor).use { inputStream ->
+                val channel = inputStream.channel
+                return channel.map(
+                    FileChannel.MapMode.READ_ONLY,
+                    fileDescriptor.startOffset,
+                    fileDescriptor.declaredLength
+                )
+            }
+        }
     }
 
 }
