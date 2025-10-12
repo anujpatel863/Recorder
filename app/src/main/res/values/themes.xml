@@ -1,0 +1,37 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base application theme. -->
+    <style name="Base.Theme.AllRecorder" parent="Theme.Material3.DayNight.NoActionBar">
+        <!-- Retro Color Palette -->
+        <item name="colorPrimary">@color/retro_primary</item>
+        <item name="colorPrimaryVariant">@color/retro_primary_dark</item>
+        <item name="colorOnPrimary">@color/retro_background</item>
+        <item name="colorSecondary">@color/retro_accent</item>
+        <item name="colorOnSecondary">@color/retro_background</item>
+        <item name="android:statusBarColor">?attr/colorPrimaryVariant</item>
+        <item name="android:windowBackground">@color/retro_background</item>
+        <item name="android:textColor">@color/retro_text_primary</item>
+
+        <!-- Retro Font -->
+        <item name="android:fontFamily">monospace</item>
+        <item name="fontFamily">monospace</item>
+
+        <!-- Component Styles -->
+        <item name="materialCardViewStyle">@style/Widget.App.CardView</item>
+        <item name="materialButtonStyle">@style/Widget.App.Button</item>
+    </style>
+
+    <style name="Theme.AllRecorder" parent="Base.Theme.AllRecorder" />
+
+    <!-- Custom Component Styles for Retro Theme -->
+    <style name="Widget.App.CardView" parent="Widget.Material3.CardView.Elevated">
+        <item name="cardBackgroundColor">@color/retro_card_background</item>
+        <item name="strokeColor">@color/retro_card_stroke</item>
+        <item name="strokeWidth">1dp</item>
+        <item name="cardCornerRadius">4dp</item>
+    </style>
+
+    <style name="Widget.App.Button" parent="Widget.Material3.Button">
+        <item name="cornerRadius">4dp</item>
+    </style>
+
+</resources>
