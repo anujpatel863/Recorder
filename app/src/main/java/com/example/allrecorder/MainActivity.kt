@@ -23,12 +23,18 @@ import android.view.View
 import androidx.lifecycle.Observer
 import androidx.work.WorkInfo
 import com.google.gson.Gson
+import android.widget.EditText
+import androidx.appcompat.app.ActionBarDrawerToggle
+import androidx.appcompat.app.AlertDialog
+import com.google.android.material.navigation.NavigationView
 
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : AppCompatActivity(), NavigationView.OnNavigationItemSelectedListener {
 
     private lateinit var binding: ActivityMainBinding
     private var isRecording = false // Simple state tracking
+
+    private lateinit var toggle: ActionBarDrawerToggle
 
 
     private val permissionsToRequest = mutableListOf<String>()
@@ -50,14 +56,79 @@ class MainActivity : AppCompatActivity() {
 
         setSupportActionBar(binding.toolbar)
 
+        // --- Setup Navigation Drawer ---
+        toggle = ActionBarDrawerToggle(this, binding.drawerLayout, binding.toolbar, R.string.navigation_drawer_open, R.string.navigation_drawer_close)
+        binding.drawerLayout.addDrawerListener(toggle)
+        toggle.syncState()
+        binding.navView.setNavigationItemSelectedListener(this)
+        // --- End Setup ---
+
         setupViewPager()
         setupFab()
-        observeRecordingState()
+    }
+    override fun onNavigationItemSelected(item: MenuItem): Boolean {
+        when (item.itemId) {
+            R.id.nav_chunk_duration -> {
+                showInputDialog("Set Chunk Duration (seconds)", SettingsManager.chunkDurationSeconds) { newValue ->
+                    SettingsManager.chunkDurationSeconds = newValue
+                    Toast.makeText(this, "Chunk duration set to $newValue seconds.", Toast.LENGTH_SHORT).show()
+                }
+            }
+            R.id.nav_silence_threshold -> {
+                showInputDialog("Set Silence Threshold (seconds)", SettingsManager.silenceThresholdSeconds) { newValue ->
+                    SettingsManager.silenceThresholdSeconds = newValue
+                    Toast.makeText(this, "Silence threshold set to $newValue seconds.", Toast.LENGTH_SHORT).show()
+                }
+            }
+            R.id.nav_smart_detection -> {
+                // This item contains the switch, so we handle its click
+                val switch = item.actionView?.findViewById<androidx.appcompat.widget.SwitchCompat>(R.id.nav_switch)
+                switch?.let {
+                    it.isChecked = !it.isChecked
+                    SettingsManager.isSmartDetectionEnabled = it.isChecked
+                }
+                // We return false here to allow the checkable behavior to work correctly
+                return false
+            }
+        }
+        binding.drawerLayout.closeDrawers()
+        return true
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Update the switch state every time the drawer is opened
+        val smartDetectionItem = binding.navView.menu.findItem(R.id.nav_smart_detection)
+        val switch = smartDetectionItem.actionView?.findViewById<androidx.appcompat.widget.SwitchCompat>(R.id.nav_switch)
+        switch?.isChecked = SettingsManager.isSmartDetectionEnabled
+    }
+
+    private fun showInputDialog(title: String, currentValue: Int, onSave: (Int) -> Unit) {
+        val builder = AlertDialog.Builder(this)
+        builder.setTitle(title)
+
+        val input = EditText(this)
+        input.inputType = android.text.InputType.TYPE_CLASS_NUMBER
+        input.setText(currentValue.toString())
+        builder.setView(input)
+
+        builder.setPositiveButton("Save") { _, _ ->
+            val newValue = input.text.toString().toIntOrNull()
+            if (newValue != null && newValue > 0) {
+                onSave(newValue)
+            } else {
+                Toast.makeText(this, "Please enter a valid number.", Toast.LENGTH_SHORT).show()
+            }
+        }
+        builder.setNegativeButton("Cancel") { dialog, _ -> dialog.cancel() }
+        builder.show()
+    }
 
     private fun setupViewPager() {
         binding.viewPager.adapter = ViewPagerAdapter(this)
+        // ADD THIS LINE to improve swipe performance
+        binding.viewPager.offscreenPageLimit = 1
+
         TabLayoutMediator(binding.tabLayout, binding.viewPager) { tab, position ->
             tab.text = when (position) {
                 0 -> getString(R.string.tab_conversations)

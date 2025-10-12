@@ -28,6 +28,7 @@ import java.util.Locale
 class RecordingService : Service(), AudioManager.OnAudioFocusChangeListener {
 
     private var mediaRecorder: MediaRecorder? = null
+
     private var currentFilePath: String? = null
     private val serviceJob = SupervisorJob()
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
@@ -59,7 +60,9 @@ class RecordingService : Service(), AudioManager.OnAudioFocusChangeListener {
         }
     }
 
-    private val recordingDurationMillis = 30 * 1000L
+    private val recordingDurationMillis: Long
+        get() = (SettingsManager.chunkDurationSeconds * 1000).toLong()
+
 
     companion object {
         private const val NOTIFICATION_CHANNEL_ID = "RecordingServiceChannel"
@@ -195,6 +198,7 @@ class RecordingService : Service(), AudioManager.OnAudioFocusChangeListener {
             try {
                 setAudioSource(MediaRecorder.AudioSource.MIC)
                 setOutputFormat(MediaRecorder.OutputFormat.AAC_ADTS)
+                setAudioSamplingRate(16000)
                 setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
                 setOutputFile(currentFilePath)
                 prepare()

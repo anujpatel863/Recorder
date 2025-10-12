@@ -8,6 +8,9 @@ class RecorderApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Initialize the SettingsManager
+        SettingsManager.init(this)
+
         scheduleDiarizationWorker()
     }
 

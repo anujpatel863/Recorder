@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+    <group android:checkableBehavior="single">
+        <item
+            android:id="@+id/nav_smart_detection"
+            android:title="Enable Smart Detection"
+            app:actionLayout="@layout/switch_item" />
+    </group>
+    <group android:checkableBehavior="none">
+        <item
+            android:id="@+id/nav_chunk_duration"
+            android:title="Set Chunk Duration" />
+        <item
+            android:id="@+id/nav_silence_threshold"
+            android:title="Set Silence Threshold" />
+        <item
+            android:id="@+id/action_group_conversations"
+            android:title="@string/action_group_conversations"
+            android:icon="@android:drawable/ic_menu_sort_by_size"
+            app:showAsAction="ifRoom" />
+    </group>
+</menu>

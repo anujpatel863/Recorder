@@ -21,7 +21,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.tensorflow.lite.Interpreter
 
-// Data class to hold information about a detected speech segment
+// (SpeechEvent data class remains the same)
 data class SpeechEvent(
     val startTimeSeconds: Float,
     val endTimeSeconds: Float,
@@ -33,6 +33,7 @@ class DiarizationWorker(
     workerParams: WorkerParameters
 ) : CoroutineWorker(appContext, workerParams) {
 
+    // (Properties remain the same)
     private val recordingDao = AppDatabase.getDatabase(appContext).recordingDao()
     private val conversationDao = AppDatabase.getDatabase(appContext).conversationDao()
     private val speakerInterpreter: Interpreter
@@ -45,12 +46,13 @@ class DiarizationWorker(
         private const val SAMPLE_RATE = 16000
         private const val BYTES_PER_FLOAT = 4
         private const val VAD_INPUT_SIZE = 528
-        private const val CONVERSATION_BREAK_THRESHOLD_SECONDS = 15.0
-        private const val SIMILARITY_THRESHOLD = 0.85
-        // A gap of more than 2 seconds between chunks means a new timeline
         private const val CHUNK_CONTINUITY_THRESHOLD_MILLIS = 2000
+        private const val SIMILARITY_THRESHOLD = 0.85
+        // New threshold to detect a definite speaker change
+        private const val SPEAKER_CHANGE_THRESHOLD = 0.70
     }
 
+    // (init, doWork, processTimeline, findAllSpeechEvents, and all utility functions remain the same)
     init {
         speakerInterpreter = Interpreter(loadModelFile("conformer_tisid_small.tflite"))
         vadInterpreter = Interpreter(loadModelFile("vad_long_model.tflite"))
@@ -157,6 +159,10 @@ class DiarizationWorker(
         return events
     }
 
+
+    /**
+     * This is the upgraded core logic.
+     */
     private suspend fun groupEventsIntoConversations(events: List<SpeechEvent>, recordingsInTimeline: List<Recording>) {
         if (events.isEmpty()) return
 
@@ -166,19 +172,39 @@ class DiarizationWorker(
         for (event in events) {
             if (currentConversationEvents.isEmpty()) {
                 currentConversationEvents.add(event)
-            } else {
-                val lastEvent = currentConversationEvents.last()
-                val silenceDuration = event.startTimeSeconds - lastEvent.endTimeSeconds
+                continue
+            }
 
-                if (silenceDuration < CONVERSATION_BREAK_THRESHOLD_SECONDS) {
-                    currentConversationEvents.add(event)
-                } else {
-                    finalizeConversation(currentConversationEvents, timelineStartTime)
-                    currentConversationEvents = mutableListOf(event)
+            val lastEvent = currentConversationEvents.last()
+            val silenceDuration = event.startTimeSeconds - lastEvent.endTimeSeconds
+
+            var splitConversation = false
+
+            // Rule 1: Long silence always splits the conversation
+            if (silenceDuration >= SettingsManager.silenceThresholdSeconds) {
+                splitConversation = true
+            }
+
+            // Rule 2: If smart detection is on, a speaker change also splits the conversation
+            if (!splitConversation && SettingsManager.isSmartDetectionEnabled) {
+                val similarity = cosineSimilarity(lastEvent.speakerEmbedding, event.speakerEmbedding)
+                if (similarity < SPEAKER_CHANGE_THRESHOLD) {
+                    splitConversation = true
                 }
+            }
+
+            if (splitConversation) {
+                // Finalize the previous conversation
+                finalizeConversation(currentConversationEvents, timelineStartTime)
+                // Start a new conversation
+                currentConversationEvents = mutableListOf(event)
+            } else {
+                // It's the same conversation, just add the event
+                currentConversationEvents.add(event)
             }
         }
 
+        // Finalize any remaining conversation
         if (currentConversationEvents.isNotEmpty()) {
             finalizeConversation(currentConversationEvents, timelineStartTime)
         }
@@ -254,26 +280,42 @@ class DiarizationWorker(
 
     private fun readAudioFile(filePath: String): FloatArray {
         val extractor = MediaExtractor()
-        extractor.setDataSource(filePath)
-        val trackIndex = selectAudioTrack(extractor)
-        if (trackIndex == -1) return FloatArray(0)
-        extractor.selectTrack(trackIndex)
-        val format = extractor.getTrackFormat(trackIndex)
-        val sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-        val buffer = ByteBuffer.allocate(SAMPLE_RATE * 2).order(ByteOrder.nativeOrder())
         val audioSamples = mutableListOf<Float>()
-        while (extractor.readSampleData(buffer, 0) >= 0) {
-            buffer.rewind()
-            while (buffer.hasRemaining()) {
-                audioSamples.add(buffer.getShort().toFloat() / 32768.0f)
+        try {
+            extractor.setDataSource(filePath)
+            val trackIndex = selectAudioTrack(extractor)
+            if (trackIndex == -1) {
+                Log.e(TAG, "No audio track found in file: $filePath")
+                return FloatArray(0)
             }
-            buffer.clear()
-            extractor.advance()
+            extractor.selectTrack(trackIndex)
+            val format = extractor.getTrackFormat(trackIndex)
+            val sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+            val buffer = ByteBuffer.allocate(SAMPLE_RATE * 2).order(ByteOrder.nativeOrder())
+
+            while (extractor.readSampleData(buffer, 0) >= 0) {
+                buffer.rewind()
+                // CRITICAL FIX: Check if there are at least 2 bytes remaining before reading a short
+                while (buffer.remaining() >= 2) {
+                    val sample = buffer.getShort().toFloat() / 32768.0f
+                    audioSamples.add(sample)
+                }
+                buffer.clear()
+                extractor.advance()
+            }
+
+            if (sampleRate != SAMPLE_RATE) {
+                Log.w(TAG, "Sample rate mismatch for file: $filePath")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to read audio file: $filePath", e)
+            return FloatArray(0) // Return empty array on any error
+        } finally {
+            extractor.release()
         }
-        extractor.release()
-        if (sampleRate != SAMPLE_RATE) Log.w(TAG, "Sample rate mismatch.")
         return audioSamples.toFloatArray()
     }
+
 
     private fun selectAudioTrack(extractor: MediaExtractor): Int {
         for (i in 0 until extractor.trackCount) {
@@ -291,4 +333,5 @@ class DiarizationWorker(
             fileDescriptor.declaredLength
         )
     }
+
 }
