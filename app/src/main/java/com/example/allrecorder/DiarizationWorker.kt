@@ -1,19 +1,32 @@
 package com.example.allrecorder
 
 import android.content.Context
+import android.media.MediaExtractor
+import android.media.MediaFormat
 import android.util.Log
 import androidx.work.CoroutineWorker
+import androidx.work.Data
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import org.tensorflow.lite.Interpreter
+import com.google.gson.Gson
 import java.io.FileInputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.math.sqrt
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.tensorflow.lite.Interpreter
+
+// Data class to hold information about a detected speech segment
+data class SpeechEvent(
+    val startTimeSeconds: Float,
+    val endTimeSeconds: Float,
+    val speakerEmbedding: FloatArray
+)
 
 class DiarizationWorker(
     appContext: Context,
@@ -23,18 +36,250 @@ class DiarizationWorker(
     private val recordingDao = AppDatabase.getDatabase(appContext).recordingDao()
     private val conversationDao = AppDatabase.getDatabase(appContext).conversationDao()
     private val speakerInterpreter: Interpreter
+    private val vadInterpreter: Interpreter
 
     companion object {
         const val WORK_NAME = "DiarizationWorker"
         private const val TAG = "DiarizationWorker"
-        private const val SIMILARITY_THRESHOLD = 0.85 // Increased for better speaker grouping
-        private const val SILENCE_EMBEDDING_THRESHOLD = 10.0 // Threshold for silence detection
         const val PROGRESS = "PROGRESS"
+        private const val SAMPLE_RATE = 16000
+        private const val BYTES_PER_FLOAT = 4
+        private const val VAD_INPUT_SIZE = 528
+        private const val CONVERSATION_BREAK_THRESHOLD_SECONDS = 15.0
+        private const val SIMILARITY_THRESHOLD = 0.85
+        // A gap of more than 2 seconds between chunks means a new timeline
+        private const val CHUNK_CONTINUITY_THRESHOLD_MILLIS = 2000
     }
 
     init {
-        // We will only use the speaker identification model
         speakerInterpreter = Interpreter(loadModelFile("conformer_tisid_small.tflite"))
+        vadInterpreter = Interpreter(loadModelFile("vad_long_model.tflite"))
+    }
+
+    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        try {
+            // Get all unprocessed recordings and sort them chronologically
+            val unprocessedRecordings = recordingDao.getUnprocessedRecordings().sortedBy { it.startTime }
+            if (unprocessedRecordings.isEmpty()) return@withContext Result.success()
+
+            val initialProgress = DiarizationProgress(0, "Starting analysis...", unprocessedRecordings.size, 0)
+            setProgress(createProgressData(initialProgress))
+
+            var timelineAudioData = mutableListOf<Float>()
+            var timelineRecordings = mutableListOf<Recording>()
+            var lastRecordingEndTime: Long = 0
+
+            for ((index, recording) in unprocessedRecordings.withIndex()) {
+                val progressUpdate = DiarizationProgress(
+                    ((index + 1) * 100) / unprocessedRecordings.size,
+                    "Processing recording ${index + 1}...",
+                    unprocessedRecordings.size,
+                    index + 1
+                )
+                setProgress(createProgressData(progressUpdate))
+
+                if (timelineRecordings.isNotEmpty()) {
+                    val timeDiff = recording.startTime - lastRecordingEndTime
+                    if (timeDiff > CHUNK_CONTINUITY_THRESHOLD_MILLIS) {
+                        // Gap detected, process the completed timeline
+                        processTimeline(timelineAudioData.toFloatArray(), timelineRecordings)
+                        // Start a new timeline
+                        timelineAudioData = mutableListOf()
+                        timelineRecordings = mutableListOf()
+                    }
+                }
+
+                // Add current recording to the timeline
+                timelineAudioData.addAll(readAudioFile(recording.filePath).toList())
+                timelineRecordings.add(recording)
+                lastRecordingEndTime = recording.startTime + recording.duration
+            }
+
+            // Process the final timeline after the loop
+            if (timelineRecordings.isNotEmpty()) {
+                processTimeline(timelineAudioData.toFloatArray(), timelineRecordings)
+            }
+
+            // Mark all processed recordings
+            val processed = unprocessedRecordings.map { it.copy(isProcessed = true) }
+            recordingDao.updateRecordings(processed)
+
+            val finalProgress = DiarizationProgress(100, "Processing complete!", unprocessedRecordings.size, unprocessedRecordings.size)
+            setProgress(createProgressData(finalProgress))
+
+            Result.success()
+        } catch (e: Exception) {
+            Log.e(TAG, "Diarization worker failed", e)
+            Result.failure()
+        }
+    }
+
+    private suspend fun processTimeline(audioData: FloatArray, recordingsInTimeline: List<Recording>) {
+        val allSpeechEvents = findAllSpeechEvents(audioData)
+        groupEventsIntoConversations(allSpeechEvents, recordingsInTimeline)
+    }
+
+    private fun findAllSpeechEvents(audioData: FloatArray): List<SpeechEvent> {
+        val events = mutableListOf<SpeechEvent>()
+        if (audioData.isEmpty()) return events
+
+        val analysisWindowSize = SAMPLE_RATE // 1 second
+        val numWindows = audioData.size / analysisWindowSize
+
+        var currentSpeechSegment = mutableListOf<Float>()
+        var segmentStartTime = 0.0f
+
+        for (i in 0 until numWindows) {
+            val windowStart = i * analysisWindowSize
+            val windowEnd = windowStart + analysisWindowSize
+            val audioWindow = audioData.sliceArray(windowStart until windowEnd)
+
+            if (isSpeech(audioWindow)) {
+                if (currentSpeechSegment.isEmpty()) {
+                    segmentStartTime = (windowStart.toFloat() / SAMPLE_RATE)
+                }
+                currentSpeechSegment.addAll(audioWindow.toList())
+            } else {
+                if (currentSpeechSegment.isNotEmpty()) {
+                    val segmentEndTime = (windowStart.toFloat() / SAMPLE_RATE)
+                    val embedding = getSpeakerEmbedding(currentSpeechSegment.toFloatArray())
+                    events.add(SpeechEvent(segmentStartTime, segmentEndTime, embedding))
+                    currentSpeechSegment.clear()
+                }
+            }
+        }
+
+        if (currentSpeechSegment.isNotEmpty()) {
+            val segmentEndTime = (audioData.size.toFloat() / SAMPLE_RATE)
+            val embedding = getSpeakerEmbedding(currentSpeechSegment.toFloatArray())
+            events.add(SpeechEvent(segmentStartTime, segmentEndTime, embedding))
+        }
+        return events
+    }
+
+    private suspend fun groupEventsIntoConversations(events: List<SpeechEvent>, recordingsInTimeline: List<Recording>) {
+        if (events.isEmpty()) return
+
+        var currentConversationEvents = mutableListOf<SpeechEvent>()
+        val timelineStartTime = recordingsInTimeline.first().startTime
+
+        for (event in events) {
+            if (currentConversationEvents.isEmpty()) {
+                currentConversationEvents.add(event)
+            } else {
+                val lastEvent = currentConversationEvents.last()
+                val silenceDuration = event.startTimeSeconds - lastEvent.endTimeSeconds
+
+                if (silenceDuration < CONVERSATION_BREAK_THRESHOLD_SECONDS) {
+                    currentConversationEvents.add(event)
+                } else {
+                    finalizeConversation(currentConversationEvents, timelineStartTime)
+                    currentConversationEvents = mutableListOf(event)
+                }
+            }
+        }
+
+        if (currentConversationEvents.isNotEmpty()) {
+            finalizeConversation(currentConversationEvents, timelineStartTime)
+        }
+    }
+
+    private suspend fun finalizeConversation(events: List<SpeechEvent>, timelineStartTime: Long) {
+        if (events.isEmpty()) return
+
+        val firstEvent = events.first()
+        val lastEvent = events.last()
+
+        val uniqueSpeakers = mutableListOf<FloatArray>()
+        events.forEach { event ->
+            if (uniqueSpeakers.none { cosineSimilarity(it, event.speakerEmbedding) > SIMILARITY_THRESHOLD }) {
+                uniqueSpeakers.add(event.speakerEmbedding)
+            }
+        }
+
+        // The file path isn't relevant anymore as a conversation can span multiple files.
+        // For playback, we would need to load multiple files and seek.
+        // For now, let's simplify and remove the direct file path dependency from the Conversation object.
+        val conversation = Conversation(
+            startTime = timelineStartTime + (firstEvent.startTimeSeconds * 1000).toLong(),
+            endTime = timelineStartTime + (lastEvent.endTimeSeconds * 1000).toLong(),
+            speakerCount = uniqueSpeakers.size,
+            title = "Conversation at ${formatDate(timelineStartTime + (firstEvent.startTimeSeconds * 1000).toLong())}"
+        )
+        conversationDao.insert(conversation)
+    }
+
+    // --- Utility Functions (unchanged from previous correct versions) ---
+
+    private fun isSpeech(audioWindow: FloatArray): Boolean {
+        val inputBuffer = ByteBuffer.allocateDirect(VAD_INPUT_SIZE * BYTES_PER_FLOAT).order(ByteOrder.nativeOrder())
+        val outputBuffer = ByteBuffer.allocateDirect(16).order(ByteOrder.nativeOrder())
+        for(i in 0 until VAD_INPUT_SIZE) {
+            inputBuffer.putFloat(if(i < audioWindow.size) audioWindow[i] else 0.0f)
+        }
+        inputBuffer.rewind()
+        outputBuffer.rewind()
+        vadInterpreter.run(inputBuffer, outputBuffer)
+        outputBuffer.rewind()
+        val probabilities = FloatArray(4)
+        outputBuffer.asFloatBuffer().get(probabilities)
+        return (probabilities.maxOrNull() ?: 0f) > 0.5f
+    }
+
+    private fun getSpeakerEmbedding(audioSegment: FloatArray): FloatArray {
+        val inputBuffer = ByteBuffer.allocateDirect(SAMPLE_RATE * BYTES_PER_FLOAT).order(ByteOrder.nativeOrder())
+        for (i in 0 until SAMPLE_RATE) {
+            if (i < audioSegment.size) inputBuffer.putFloat(audioSegment[i]) else inputBuffer.putFloat(0.0f)
+        }
+        inputBuffer.rewind()
+        val outputBuffer = Array(1) { FloatArray(512) }
+        try {
+            speakerInterpreter.run(inputBuffer, outputBuffer)
+        } catch (e: Exception) {
+            Log.e(TAG, "TFLite speaker interpreter failed", e)
+        }
+        return outputBuffer[0]
+    }
+
+    private fun cosineSimilarity(vec1: FloatArray, vec2: FloatArray): Float {
+        val dotProduct = vec1.zip(vec2).sumOf { (a, b) -> (a * b).toDouble() }.toFloat()
+        val normA = sqrt(vec1.sumOf { (it * it).toDouble() }).toFloat()
+        val normB = sqrt(vec2.sumOf { (it * it).toDouble() }).toFloat()
+        return if (normA == 0f || normB == 0f) 0f else dotProduct / (normA * normB)
+    }
+
+    private fun formatDate(timestamp: Long): String = SimpleDateFormat("MMM dd, h:mm a", Locale.getDefault()).format(Date(timestamp))
+
+    private fun createProgressData(progress: DiarizationProgress): Data = workDataOf(PROGRESS to Gson().toJson(progress))
+
+    private fun readAudioFile(filePath: String): FloatArray {
+        val extractor = MediaExtractor()
+        extractor.setDataSource(filePath)
+        val trackIndex = selectAudioTrack(extractor)
+        if (trackIndex == -1) return FloatArray(0)
+        extractor.selectTrack(trackIndex)
+        val format = extractor.getTrackFormat(trackIndex)
+        val sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+        val buffer = ByteBuffer.allocate(SAMPLE_RATE * 2).order(ByteOrder.nativeOrder())
+        val audioSamples = mutableListOf<Float>()
+        while (extractor.readSampleData(buffer, 0) >= 0) {
+            buffer.rewind()
+            while (buffer.hasRemaining()) {
+                audioSamples.add(buffer.getShort().toFloat() / 32768.0f)
+            }
+            buffer.clear()
+            extractor.advance()
+        }
+        extractor.release()
+        if (sampleRate != SAMPLE_RATE) Log.w(TAG, "Sample rate mismatch.")
+        return audioSamples.toFloatArray()
+    }
+
+    private fun selectAudioTrack(extractor: MediaExtractor): Int {
+        for (i in 0 until extractor.trackCount) {
+            if (extractor.getTrackFormat(i).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true) return i
+        }
+        return -1
     }
 
     private fun loadModelFile(modelName: String): MappedByteBuffer {
@@ -46,126 +291,4 @@ class DiarizationWorker(
             fileDescriptor.declaredLength
         )
     }
-
-    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
-        Log.d(TAG, "Diarization worker started.")
-        try {
-            val unprocessedRecordings = recordingDao.getUnprocessedRecordings()
-            if (unprocessedRecordings.isEmpty()) {
-                Log.d(TAG, "No new recordings to process.")
-                return@withContext Result.success()
-            }
-
-            Log.d(TAG, "Processing ${unprocessedRecordings.size} recordings.")
-            setProgress(workDataOf(PROGRESS to 0))
-
-            // Step 1: Process all recordings to get embeddings or mark as silent
-            val processedRecordings = unprocessedRecordings.mapIndexed { index, recording ->
-                val embedding = getSpeakerEmbedding(recording.filePath)
-                val isSilent = isSilent(embedding)
-                val progress = ((index + 1) * 100) / unprocessedRecordings.size
-                setProgress(workDataOf(PROGRESS to progress))
-
-                if (isSilent) {
-                    recording.copy(speakerLabels = "SILENCE", isProcessed = true)
-                } else {
-                    recording.copy(speakerLabels = embedding.joinToString(","), isProcessed = true)
-                }
-            }
-
-            // Step 2: Group the processed recordings into conversations
-            groupIntoConversations(processedRecordings)
-            setProgress(workDataOf(PROGRESS to 100))
-            Result.success()
-        } catch (e: Exception) {
-            Log.e(TAG, "Diarization worker failed", e)
-            Result.failure()
-        }
-    }
-
-    private fun isSilent(embedding: FloatArray): Boolean {
-        // Calculate the magnitude of the embedding. Silent audio has a low magnitude.
-        val norm = sqrt(embedding.sumOf { (it * it).toDouble() }).toFloat()
-        Log.d(TAG, "Calculated embedding norm: $norm")
-        return norm < SILENCE_EMBEDDING_THRESHOLD
-    }
-
-    private fun getSpeakerEmbedding(filePath: String): FloatArray {
-        // TODO: Replace this with actual audio preprocessing.
-        // The model expects a 1-second audio clip at 16kHz.
-        val inputBuffer = Array(1) { FloatArray(16000) }
-        val outputBuffer = Array(1) { FloatArray(512) }
-        try {
-            speakerInterpreter.run(inputBuffer, outputBuffer)
-        } catch (e: Exception) {
-            Log.e(TAG, "TFLite interpreter failed for file: $filePath", e)
-        }
-        return outputBuffer[0]
-    }
-
-    private suspend fun groupIntoConversations(recordings: List<Recording>) {
-        val speechChunks = recordings.filter { it.speakerLabels != "SILENCE" }
-        val silentChunks = recordings.filter { it.speakerLabels == "SILENCE" }
-        recordingDao.updateRecordings(silentChunks) // Update silent chunks as processed
-
-        var currentConversationChunks = mutableListOf<Recording>()
-        var lastSpeakerEmbedding: FloatArray? = null
-
-        for (chunk in speechChunks) {
-            val currentEmbedding = chunk.speakerLabels!!.split(',').map { it.toFloat() }.toFloatArray()
-
-            if (lastSpeakerEmbedding == null || cosineSimilarity(lastSpeakerEmbedding, currentEmbedding) > SIMILARITY_THRESHOLD) {
-                // Same speaker or first speaker, add to current conversation
-                currentConversationChunks.add(chunk)
-            } else {
-                // Different speaker, finalize the previous conversation
-                finalizeConversation(currentConversationChunks)
-                // Start a new conversation with the current chunk
-                currentConversationChunks = mutableListOf(chunk)
-            }
-            lastSpeakerEmbedding = currentEmbedding
-        }
-
-        // Finalize any remaining conversation
-        if (currentConversationChunks.isNotEmpty()) {
-            finalizeConversation(currentConversationChunks)
-        }
-    }
-
-    private suspend fun finalizeConversation(chunks: List<Recording>) {
-        if (chunks.isEmpty()) return
-
-        // Identify unique speakers in this conversation
-        val uniqueSpeakers = mutableListOf<FloatArray>()
-        chunks.forEach { chunk ->
-            val embedding = chunk.speakerLabels!!.split(',').map { it.toFloat() }.toFloatArray()
-            if (uniqueSpeakers.none { cosineSimilarity(it, embedding) > SIMILARITY_THRESHOLD }) {
-                uniqueSpeakers.add(embedding)
-            }
-        }
-
-        val firstChunk = chunks.first()
-        val lastChunk = chunks.last()
-        val conversation = Conversation(
-            title = "Conversation at ${formatDate(firstChunk.startTime)}",
-            startTime = firstChunk.startTime,
-            endTime = lastChunk.startTime + lastChunk.duration,
-            speakerCount = uniqueSpeakers.size
-        )
-        val conversationId = conversationDao.insert(conversation)
-        chunks.forEach { it.conversationId = conversationId }
-        recordingDao.updateRecordings(chunks)
-    }
-
-    private fun cosineSimilarity(vec1: FloatArray, vec2: FloatArray): Float {
-        val dotProduct = vec1.zip(vec2).sumOf { (a, b) -> (a * b).toDouble() }.toFloat()
-        val normA = sqrt(vec1.sumOf { (it * it).toDouble() }).toFloat()
-        val normB = sqrt(vec2.sumOf { (it * it).toDouble() }).toFloat()
-        return if (normA == 0f || normB == 0f) 0f else dotProduct / (normA * normB)
-    }
-
-    private fun formatDate(timestamp: Long): String {
-        return SimpleDateFormat("MMM dd, h:mm a", Locale.getDefault()).format(Date(timestamp))
-    }
 }
-

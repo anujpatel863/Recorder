@@ -29,7 +29,8 @@
             android:id="@+id/tvTimestamp"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
+            android:layout_marginStart="4dp"
+            android:layout_marginTop="28dp"
             android:textAppearance="@style/TextAppearance.AppCompat.Caption"
             android:textColor="@color/retro_text_secondary"
             app:layout_constraintStart_toStartOf="parent"
@@ -42,9 +43,10 @@
             android:layout_height="wrap_content"
             android:textAppearance="@style/TextAppearance.AppCompat.Caption"
             android:textColor="@color/retro_text_secondary"
+            app:layout_constraintBottom_toBottomOf="@id/tvTimestamp"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintTop_toTopOf="@id/tvTimestamp"
-            app:layout_constraintBottom_toBottomOf="@id/tvTimestamp"
+            app:layout_constraintVertical_bias="1.0"
             tools:text="30s" />
 
         <ImageButton

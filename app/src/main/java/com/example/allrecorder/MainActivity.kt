@@ -16,11 +16,20 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.example.allrecorder.databinding.ActivityMainBinding
 import com.google.android.material.tabs.TabLayoutMediator
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
+import android.view.View
+import androidx.lifecycle.Observer
+import androidx.work.WorkInfo
+import com.google.gson.Gson
+
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private var isRecording = false // Simple state tracking
+
 
     private val permissionsToRequest = mutableListOf<String>()
     private val requestPermissionsLauncher =
@@ -33,6 +42,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
@@ -42,7 +52,9 @@ class MainActivity : AppCompatActivity() {
 
         setupViewPager()
         setupFab()
+        observeRecordingState()
     }
+
 
     private fun setupViewPager() {
         binding.viewPager.adapter = ViewPagerAdapter(this)
@@ -129,5 +141,50 @@ class MainActivity : AppCompatActivity() {
             workRequest
         )
         Toast.makeText(this, "Grouping process started.", Toast.LENGTH_SHORT).show()
+
+        // Observe the worker's progress
+        WorkManager.getInstance(this).getWorkInfoByIdLiveData(workRequest.id)
+            .observe(this, Observer { workInfo ->
+                if (workInfo != null) {
+                    when (workInfo.state) {
+                        WorkInfo.State.RUNNING -> {
+                            binding.progressLayout.visibility = View.VISIBLE
+                            val progressDataString = workInfo.progress.getString(DiarizationWorker.PROGRESS)
+                            if (progressDataString != null) {
+                                val progress = Gson().fromJson(progressDataString, DiarizationProgress::class.java)
+
+                                // Update UI with every bit of info
+                                binding.progressBar.progress = progress.progressPercentage
+                                binding.progressStatusText.text = progress.statusMessage
+                                val details = "${progress.processedRecordings}/${progress.totalRecordings} recordings analyzed"
+                                binding.progressDetailsText.text = details
+                            }
+                        }
+                        WorkInfo.State.SUCCEEDED -> {
+                            binding.progressLayout.visibility = View.GONE
+                            Toast.makeText(this, "Grouping finished successfully.", Toast.LENGTH_SHORT).show()
+                        }
+                        WorkInfo.State.FAILED -> {
+                            binding.progressLayout.visibility = View.GONE
+                            Toast.makeText(this, "Grouping failed. Please try again.", Toast.LENGTH_LONG).show()
+                        }
+                        else -> { // Handles ENQUEUED, CANCELLED, BLOCKED
+                            binding.progressLayout.visibility = View.GONE
+                        }
+                    }
+                }
+            })
+    }
+    private fun observeRecordingState() {
+        lifecycleScope.launch {
+            RecordingService.isRecording.collect { isRecording ->
+                this@MainActivity.isRecording = isRecording
+                if (isRecording) {
+                    binding.fab.setImageResource(android.R.drawable.ic_media_pause)
+                } else {
+                    binding.fab.setImageResource(android.R.drawable.ic_btn_speak_now)
+                }
+            }
+        }
     }
 }

@@ -7,8 +7,8 @@ import androidx.room.PrimaryKey
 data class Conversation(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
-    val title: String,
-    val startTime: Long,
-    var endTime: Long,
-    val speakerCount: Int = 0
+    var title: String,
+    val startTime: Long, // Absolute start time (epoch milliseconds)
+    val endTime: Long,   // Absolute end time (epoch milliseconds)
+    val speakerCount: Int
 )

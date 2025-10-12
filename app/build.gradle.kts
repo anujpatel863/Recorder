@@ -38,6 +38,8 @@ android {
         viewBinding = true
     }
 }
+// In app/build.gradle.kts
+
 dependencies {
 
     implementation(libs.androidx.core.ktx)
@@ -50,11 +52,11 @@ dependencies {
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
+
     // TensorFlow Lite - Main library for custom processing
     implementation("org.tensorflow:tensorflow-lite:2.13.0")
     // Audio support for TFLite
     implementation("org.tensorflow:tensorflow-lite-support-api:0.4.4")
-
 
     // WorkManager for background tasks
     implementation("androidx.work:work-runtime-ktx:2.9.0")
@@ -70,14 +72,12 @@ dependencies {
 
     // Lifecycle for Service
     implementation("androidx.lifecycle:lifecycle-service:2.7.0")
-
-    // Coroutines for background tasks
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
-
 
     // Testing libraries (optional but good practice)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
+
+    implementation("com.google.code.gson:gson:2.10.1")
 }
