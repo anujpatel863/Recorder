@@ -32,13 +32,11 @@ class RecordingAdapter(
         currentProgress = progress
         this.isPlaying = isPlaying
 
-        // Notify previous item to update its UI if it's different from the new one
         if (previousPlayingId != null && previousPlayingId != playingId) {
             val oldPosition = currentList.indexOfFirst { it.id == previousPlayingId }
             if (oldPosition != -1) notifyItemChanged(oldPosition)
         }
 
-        // Notify new item to update its UI
         if (playingId != null) {
             val newPosition = currentList.indexOfFirst { it.id == playingId }
             if (newPosition != -1) notifyItemChanged(newPosition)
@@ -84,6 +82,17 @@ class RecordingAdapter(
             binding.tvTimestamp.text = formatDate(recording.startTime)
             binding.tvDuration.text = formatDuration(recording.duration)
             binding.seekBar.max = recording.duration.toInt()
+
+            // --- START OF CHANGES ---
+
+            // Show or hide the processed icon based on the recording's state
+            binding.ivProcessed.visibility = if (recording.isProcessed) {
+                View.VISIBLE
+            } else {
+                View.GONE
+            }
+
+            // --- END OF CHANGES ---
 
             if (isCurrentlyActive) {
                 binding.seekBar.progress = progress

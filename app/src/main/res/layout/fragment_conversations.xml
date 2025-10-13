@@ -1,10 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.recyclerview.widget.RecyclerView xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
-    android:id="@+id/rvConversations"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:padding="8dp"
-    android:clipToPadding="false"
-    tools:context=".ConversationsFragment"
-    tools:listitem="@layout/item_conversation" />
+    tools:context=".ConversationsFragment">
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/recyclerView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/tvNoConversations"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="No conversations to show"
+        android:layout_gravity="center"
+        android:visibility="gone" />
+
+</FrameLayout>

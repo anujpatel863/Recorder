@@ -12,6 +12,20 @@
         android:layout_height="wrap_content"
         android:padding="12dp">
 
+        <ImageView
+            android:id="@+id/ivProcessed"
+            android:layout_width="16dp"
+            android:layout_height="16dp"
+            android:src="@android:drawable/ic_dialog_info"
+            app:tint="?attr/colorPrimary"
+            android:layout_marginStart="4dp"
+            app:layout_constraintStart_toEndOf="@id/tvFileName"
+            app:layout_constraintTop_toTopOf="@id/tvFileName"
+            app:layout_constraintBottom_toBottomOf="@id/tvFileName"
+            android:visibility="gone"
+            tools:visibility="visible"
+            android:contentDescription="Processed Recording"/>
+
         <TextView
             android:id="@+id/tvFileName"
             android:layout_width="0dp"
@@ -19,9 +33,9 @@
             android:textAppearance="@style/TextAppearance.AppCompat.Body2"
             android:textColor="@color/retro_text_primary"
             android:textStyle="bold"
-            app:layout_constraintEnd_toStartOf="@+id/btnEdit"
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintEnd_toStartOf="@+id/btnEdit"
             android:layout_marginEnd="8dp"
             tools:text="AUDIO_20251011_201300.aac" />
 
@@ -29,8 +43,7 @@
             android:id="@+id/tvTimestamp"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginStart="4dp"
-            android:layout_marginTop="28dp"
+            android:layout_marginTop="24dp"
             android:textAppearance="@style/TextAppearance.AppCompat.Caption"
             android:textColor="@color/retro_text_secondary"
             app:layout_constraintStart_toStartOf="parent"
@@ -46,7 +59,6 @@
             app:layout_constraintBottom_toBottomOf="@id/tvTimestamp"
             app:layout_constraintEnd_toEndOf="parent"
             app:layout_constraintTop_toTopOf="@id/tvTimestamp"
-            app:layout_constraintVertical_bias="1.0"
             tools:text="30s" />
 
         <ImageButton
@@ -116,4 +128,3 @@
     </androidx.constraintlayout.widget.ConstraintLayout>
 
 </com.google.android.material.card.MaterialCardView>
-

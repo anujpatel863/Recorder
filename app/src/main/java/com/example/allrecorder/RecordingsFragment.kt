@@ -7,7 +7,9 @@ import android.os.Looper
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.fragment.app.Fragment
@@ -17,6 +19,8 @@ import com.example.allrecorder.databinding.FragmentRecordingsBinding
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.IOException
+import android.util.Log
+
 
 class RecordingsFragment : Fragment() {
 
@@ -50,7 +54,7 @@ class RecordingsFragment : Fragment() {
             onPlayClicked = { recording -> playRecording(recording) },
             onPauseClicked = { pauseRecording() },
             onSeekBarChanged = { newPosition -> mediaPlayer?.seekTo(newPosition) },
-            onEditClicked = { recording -> showRenameDialog(recording) },
+            onEditClicked = { recording -> showEditDialog(recording) },
             onDeleteClicked = { recording -> deleteRecording(recording) }
         )
         binding.rvRecordings.apply {
@@ -80,7 +84,6 @@ class RecordingsFragment : Fragment() {
     }
 
     private fun playRecording(recording: Recording) {
-        // Case 1: Resume playback on the currently paused track
         if (mediaPlayer != null && !mediaPlayer!!.isPlaying && currentlyPlaying?.id == recording.id) {
             mediaPlayer?.start()
             handler.post(updateSeekBar)
@@ -88,7 +91,6 @@ class RecordingsFragment : Fragment() {
             return
         }
 
-        // Case 2: A new track is selected, so stop the old one first
         stopPlayback()
 
         currentlyPlaying = recording
@@ -132,42 +134,83 @@ class RecordingsFragment : Fragment() {
         }
     }
 
-    private fun showRenameDialog(recording: Recording) {
-        val editText = EditText(requireContext()).apply {
+    // --- START OF MODIFICATION ---
+    /**
+     * Shows a dialog to edit the recording's name and its 'isProcessed' status.
+     */
+    private fun showEditDialog(recording: Recording) {
+        val context = requireContext()
+        // Create a container for our dialog views
+        val layout = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            val padding = (20 * resources.displayMetrics.density).toInt()
+            setPadding(padding, padding, padding, padding)
+        }
+
+        // Input field for the file name
+        val nameInput = EditText(context).apply {
             setText(File(recording.filePath).nameWithoutExtension)
         }
-        AlertDialog.Builder(requireContext())
-            .setTitle("Rename Recording")
-            .setView(editText)
-            .setPositiveButton("Rename") { _, _ ->
-                val newName = editText.text.toString()
-                if (newName.isNotBlank()) {
-                    renameRecording(recording, "$newName.aac")
-                }
+        layout.addView(nameInput)
+
+        // Checkbox to toggle the isProcessed state
+        val processedCheckBox = CheckBox(context).apply {
+            text = "Mark as processed"
+            isChecked = recording.isProcessed
+            val margin = (16 * resources.displayMetrics.density).toInt()
+            (layoutParams as? ViewGroup.MarginLayoutParams)?.topMargin = margin
+        }
+        layout.addView(processedCheckBox)
+
+        AlertDialog.Builder(context)
+            .setTitle("Edit Recording")
+            .setView(layout)
+            .setPositiveButton("Save") { _, _ ->
+                val newName = nameInput.text.toString().trim()
+                val newIsProcessed = processedCheckBox.isChecked
+                updateRecording(recording, newName, newIsProcessed)
             }
             .setNegativeButton("Cancel", null)
             .show()
     }
 
-    private fun renameRecording(recording: Recording, newFileName: String) {
-        val oldFile = File(recording.filePath)
-        val newFile = File(oldFile.parent, newFileName)
-
-        if (newFile.exists()) {
-            Toast.makeText(requireContext(), "A file with this name already exists", Toast.LENGTH_SHORT).show()
+    private fun updateRecording(originalRecording: Recording, newName: String, newIsProcessed: Boolean) {
+        if (newName.isBlank()) {
+            Toast.makeText(requireContext(), "File name cannot be empty", Toast.LENGTH_SHORT).show()
             return
         }
 
-        if (oldFile.renameTo(newFile)) {
-            val updatedRecording = recording.copy(filePath = newFile.absolutePath)
+        val oldFile = File(originalRecording.filePath)
+        val fileExtension = oldFile.extension
+        val newFile = File(oldFile.parent, "$newName.$fileExtension")
+
+        var finalPath = originalRecording.filePath
+        var renameSuccess = true
+
+        // Only rename if the name has actually changed
+        if (oldFile.absolutePath != newFile.absolutePath) {
+            if (newFile.exists()) {
+                Toast.makeText(requireContext(), "A file with this name already exists", Toast.LENGTH_SHORT).show()
+                return
+            }
+            if (oldFile.renameTo(newFile)) {
+                finalPath = newFile.absolutePath
+            } else {
+                renameSuccess = false
+                Toast.makeText(requireContext(), "Rename failed", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        if (renameSuccess) {
+            // Update the recording object in the database with the new path and isProcessed state
+            val updatedRecording = originalRecording.copy(filePath = finalPath, isProcessed = newIsProcessed)
             lifecycleScope.launch {
                 recordingDao.update(updatedRecording)
             }
-            Toast.makeText(requireContext(), "Renamed successfully", Toast.LENGTH_SHORT).show()
-        } else {
-            Toast.makeText(requireContext(), "Rename failed", Toast.LENGTH_SHORT).show()
+            Toast.makeText(requireContext(), "Changes saved", Toast.LENGTH_SHORT).show()
         }
     }
+    // --- END OF MODIFICATION ---
 
     private fun deleteRecording(recording: Recording) {
         if (recording.id == currentlyPlaying?.id) {
@@ -179,7 +222,7 @@ class RecordingsFragment : Fragment() {
             try {
                 File(recording.filePath).delete()
             } catch (e: Exception) {
-                // Log error if needed
+                Log.e("RecordingsFragment", "Failed to delete file", e)
             }
             Toast.makeText(requireContext(), "Recording deleted", Toast.LENGTH_SHORT).show()
         }
@@ -195,4 +238,3 @@ class RecordingsFragment : Fragment() {
         _binding = null
     }
 }
-
