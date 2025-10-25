@@ -1,8 +1,11 @@
 <resources>
-    <string name="app_name">allRecorder</string>
-    <string name="tab_conversations">Conversations</string>
-    <string name="tab_recordings">Recordings</string>
-    <string name="action_group_conversations">Group Conversations</string>
-    <string name="navigation_drawer_open">Open navigation drawer</string>
-    <string name="navigation_drawer_close">Close navigation drawer</string>
+
+
+        <string name="app_name">AllRecorder</string>
+        <string name="navigation_drawer_open">Open navigation drawer</string>
+        <string name="navigation_drawer_close">Close navigation drawer</string>
+
+
+        <string name="action_group_conversations">Group Conversations</string>
+
 </resources>

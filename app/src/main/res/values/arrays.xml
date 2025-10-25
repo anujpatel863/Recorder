@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="diarization_model_entries">
+        <item>High Accuracy</item>
+        <item>High Speed</item>
+    </string-array>
+
+    <string-array name="diarization_model_values">
+        <item>conformer_tisid_medium.tflite</item>
+        <item>conformer_tisid_small.tflite</item>
+    </string-array>
+
+    <string-array name="chunk_duration_entries">
+        <item>5 Seconds</item>
+        <item>15 Seconds</item>
+        <item>30 Seconds</item>
+        <item>1 Minute</item>
+        <item>5 Minutes</item>
+        <item>15 Minutes</item>
+        <item>30 Minutes</item>
+        <item>No Limit</item>
+    </string-array>
+
+    <string-array name="chunk_duration_values">
+        <item>5000</item>
+        <item>15000</item>
+        <item>30000</item>
+        <item>60000</item>
+        <item>300000</item>
+        <item>900000</item>
+        <item>1800000</item>
+        <item>-1</item> </string-array>
+</resources>

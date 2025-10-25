@@ -1,5 +1,6 @@
 package com.example.allrecorder
 
+import android.content.Intent
 import android.media.MediaPlayer
 import android.os.Bundle
 import android.os.Handler
@@ -7,10 +8,7 @@ import android.os.Looper
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
-import android.widget.CheckBox
 import android.widget.EditText
-import android.widget.LinearLayout
-import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
@@ -18,21 +16,56 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import com.example.allrecorder.databinding.FragmentRecordingsBinding
 import kotlinx.coroutines.launch
 import java.io.File
-import java.io.IOException
-import android.util.Log
-
 
 class RecordingsFragment : Fragment() {
 
     private var _binding: FragmentRecordingsBinding? = null
     private val binding get() = _binding!!
-
     private lateinit var recordingDao: RecordingDao
-    private lateinit var recordingAdapter: RecordingAdapter
 
     private var mediaPlayer: MediaPlayer? = null
-    private var currentlyPlaying: Recording? = null
+    private var currentPlayingRecording: Recording? = null
+
     private val handler = Handler(Looper.getMainLooper())
+    private lateinit var progressUpdater: Runnable
+
+    private val recordingAdapter: RecordingAdapter by lazy {
+        RecordingAdapter(object : RecordingAdapter.AdapterListener {
+            override fun onItemClicked(position: Int) {
+                handleItemClick(position)
+            }
+
+            override fun onPlayPauseClicked(recording: Recording) {
+                if (mediaPlayer?.isPlaying == true) {
+                    pausePlayback()
+                } else {
+                    startPlayback(recording)
+                }
+            }
+
+            override fun onRewindClicked() {
+                mediaPlayer?.let { it.seekTo(it.currentPosition - 5000) }
+            }
+
+            override fun onForwardClicked() {
+                mediaPlayer?.let { it.seekTo(it.currentPosition + 5000) }
+            }
+
+            override fun onSeekBarChanged(progress: Int, fromUser: Boolean) {
+                if (fromUser) {
+                    mediaPlayer?.seekTo(progress)
+                }
+            }
+
+            override fun onRenameClicked(recording: Recording) {
+                showRenameDialog(recording)
+            }
+
+            override fun onDeleteClicked(recording: Recording) {
+                showDeleteConfirmationDialog(recording)
+            }
+        })
+    }
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?,
@@ -44,193 +77,182 @@ class RecordingsFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+
         recordingDao = AppDatabase.getDatabase(requireContext()).recordingDao()
-        setupRecyclerView()
-        observeRecordings()
-    }
 
-    private fun setupRecyclerView() {
-        recordingAdapter = RecordingAdapter(
-            onPlayClicked = { recording -> playRecording(recording) },
-            onPauseClicked = { pauseRecording() },
-            onSeekBarChanged = { newPosition -> mediaPlayer?.seekTo(newPosition) },
-            onEditClicked = { recording -> showEditDialog(recording) },
-            onDeleteClicked = { recording -> deleteRecording(recording) }
-        )
-        binding.rvRecordings.apply {
+        binding.recyclerView.apply {
+            layoutManager = LinearLayoutManager(context)
             adapter = recordingAdapter
-            layoutManager = LinearLayoutManager(requireContext())
+        }
+
+        recordingDao.getAllRecordings().observe(viewLifecycleOwner) { recordings ->
+            recordingAdapter.submitList(recordings)
+        }
+
+        binding.recordButton.setOnClickListener {
+            toggleRecordingService()
         }
     }
 
-    private fun observeRecordings() {
-        lifecycleScope.launch {
-            recordingDao.getAllRecordings().collect { recordings ->
-                recordingAdapter.submitList(recordings)
-            }
+    private fun handleItemClick(position: Int) {
+        val previouslyExpandedPosition = recordingAdapter.expandedPosition
+
+        if (previouslyExpandedPosition == position) {
+            // Collapse the item
+            recordingAdapter.expandedPosition = -1
+            stopPlayback()
+        } else {
+            // Expand the new item
+            recordingAdapter.expandedPosition = position
+            stopPlayback() // Stop any playback before switching
         }
+
+        // Notify adapter about the changes
+        if (previouslyExpandedPosition != -1) {
+            recordingAdapter.notifyItemChanged(previouslyExpandedPosition)
+        }
+        recordingAdapter.notifyItemChanged(position)
     }
 
-    private val updateSeekBar = object : Runnable {
-        override fun run() {
-            mediaPlayer?.let {
-                if (it.isPlaying) {
-                    val currentPosition = it.currentPosition
-                    recordingAdapter.setPlaybackState(currentlyPlaying?.id, currentPosition, isPlaying = true)
-                    handler.postDelayed(this, 100)
-                }
-            }
-        }
-    }
-
-    private fun playRecording(recording: Recording) {
-        if (mediaPlayer != null && !mediaPlayer!!.isPlaying && currentlyPlaying?.id == recording.id) {
-            mediaPlayer?.start()
-            handler.post(updateSeekBar)
-            recordingAdapter.setPlaybackState(recording.id, mediaPlayer!!.currentPosition, isPlaying = true)
-            return
-        }
-
-        stopPlayback()
-
-        currentlyPlaying = recording
-        mediaPlayer = MediaPlayer().apply {
-            try {
-                setDataSource(recording.filePath)
-                prepareAsync()
-                setOnPreparedListener { mp ->
-                    mp.start()
-                    handler.post(updateSeekBar)
-                    recordingAdapter.setPlaybackState(recording.id, 0, isPlaying = true)
-                }
-                setOnCompletionListener {
+    private fun startPlayback(recording: Recording) {
+        // If it's a new recording, create a new MediaPlayer instance
+        if (currentPlayingRecording?.id != recording.id) {
+            stopPlayback() // Release any existing player
+            currentPlayingRecording = recording
+            mediaPlayer = MediaPlayer().apply {
+                try {
+                    setDataSource(recording.filePath)
+                    prepare()
+                    setOnCompletionListener {
+                        stopPlayback()
+                        // Refresh the item to show it's no longer playing
+                        if (recordingAdapter.expandedPosition != -1) {
+                            recordingAdapter.notifyItemChanged(recordingAdapter.expandedPosition)
+                        }
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    // Clean up on error
                     stopPlayback()
+                    return
                 }
-            } catch (e: IOException) {
-                Toast.makeText(requireContext(), "Could not play file", Toast.LENGTH_SHORT).show()
-                stopPlayback()
             }
         }
+
+        mediaPlayer?.start()
+        recordingAdapter.isPlaying = true
+        if (recordingAdapter.expandedPosition != -1) {
+            recordingAdapter.notifyItemChanged(recordingAdapter.expandedPosition)
+        }
+        startUpdatingProgress()
     }
 
-    private fun pauseRecording() {
-        mediaPlayer?.let {
-            if (it.isPlaying) {
-                it.pause()
-                handler.removeCallbacks(updateSeekBar)
-                recordingAdapter.setPlaybackState(currentlyPlaying?.id, it.currentPosition, isPlaying = false)
-            }
+    private fun pausePlayback() {
+        mediaPlayer?.pause()
+        recordingAdapter.isPlaying = false
+        if (recordingAdapter.expandedPosition != -1) {
+            recordingAdapter.notifyItemChanged(recordingAdapter.expandedPosition)
         }
+        stopUpdatingProgress()
     }
 
     private fun stopPlayback() {
-        val previouslyPlayingId = currentlyPlaying?.id
         mediaPlayer?.release()
         mediaPlayer = null
-        handler.removeCallbacks(updateSeekBar)
-        currentlyPlaying = null
-        if(previouslyPlayingId != null) {
-            recordingAdapter.setPlaybackState(previouslyPlayingId, 0, isPlaying = false)
+        currentPlayingRecording = null
+        recordingAdapter.isPlaying = false
+        stopUpdatingProgress()
+    }
+
+    private fun startUpdatingProgress() {
+        progressUpdater = Runnable {
+            mediaPlayer?.let { player ->
+                if (player.isPlaying) {
+                    val vh = binding.recyclerView.findViewHolderForAdapterPosition(recordingAdapter.expandedPosition)
+                    if (vh is RecordingAdapter.RecordingViewHolder) {
+                        vh.seekBar.progress = player.currentPosition
+                        vh.currentTimeTextView.text = formatDuration(player.currentPosition.toLong())
+                    }
+                    handler.postDelayed(progressUpdater, 250) // Update every 250ms
+                }
+            }
+        }
+        handler.post(progressUpdater)
+    }
+
+    private fun stopUpdatingProgress() {
+        if (::progressUpdater.isInitialized) {
+            handler.removeCallbacks(progressUpdater)
         }
     }
 
-    // --- START OF MODIFICATION ---
-    /**
-     * Shows a dialog to edit the recording's name and its 'isProcessed' status.
-     */
-    private fun showEditDialog(recording: Recording) {
-        val context = requireContext()
-        // Create a container for our dialog views
-        val layout = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            val padding = (20 * resources.displayMetrics.density).toInt()
-            setPadding(padding, padding, padding, padding)
-        }
-
-        // Input field for the file name
-        val nameInput = EditText(context).apply {
+    private fun showRenameDialog(recording: Recording) {
+        val editText = EditText(requireContext()).apply {
             setText(File(recording.filePath).nameWithoutExtension)
         }
-        layout.addView(nameInput)
 
-        // Checkbox to toggle the isProcessed state
-        val processedCheckBox = CheckBox(context).apply {
-            text = "Mark as processed"
-            isChecked = recording.isProcessed
-            val margin = (16 * resources.displayMetrics.density).toInt()
-            (layoutParams as? ViewGroup.MarginLayoutParams)?.topMargin = margin
-        }
-        layout.addView(processedCheckBox)
-
-        AlertDialog.Builder(context)
-            .setTitle("Edit Recording")
-            .setView(layout)
-            .setPositiveButton("Save") { _, _ ->
-                val newName = nameInput.text.toString().trim()
-                val newIsProcessed = processedCheckBox.isChecked
-                updateRecording(recording, newName, newIsProcessed)
+        AlertDialog.Builder(requireContext())
+            .setTitle("Rename Recording")
+            .setView(editText)
+            .setPositiveButton("Rename") { _, _ ->
+                val newName = editText.text.toString().trim()
+                if (newName.isNotEmpty()) {
+                    lifecycleScope.launch {
+                        val oldFile = File(recording.filePath)
+                        val newFile = File(oldFile.parent, "$newName.mp3")
+                        if (oldFile.renameTo(newFile)) {
+                            recording.filePath = newFile.absolutePath
+                            recordingDao.update(recording)
+                        }
+                    }
+                }
             }
             .setNegativeButton("Cancel", null)
             .show()
     }
 
-    private fun updateRecording(originalRecording: Recording, newName: String, newIsProcessed: Boolean) {
-        if (newName.isBlank()) {
-            Toast.makeText(requireContext(), "File name cannot be empty", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        val oldFile = File(originalRecording.filePath)
-        val fileExtension = oldFile.extension
-        val newFile = File(oldFile.parent, "$newName.$fileExtension")
-
-        var finalPath = originalRecording.filePath
-        var renameSuccess = true
-
-        // Only rename if the name has actually changed
-        if (oldFile.absolutePath != newFile.absolutePath) {
-            if (newFile.exists()) {
-                Toast.makeText(requireContext(), "A file with this name already exists", Toast.LENGTH_SHORT).show()
-                return
+    private fun showDeleteConfirmationDialog(recording: Recording) {
+        AlertDialog.Builder(requireContext())
+            .setTitle("Delete Recording")
+            .setMessage("Are you sure you want to permanently delete this recording?")
+            .setPositiveButton("Delete") { _, _ ->
+                if (recording.id == currentPlayingRecording?.id) {
+                    stopPlayback()
+                    recordingAdapter.expandedPosition = -1 // Collapse item
+                }
+                lifecycleScope.launch {
+                    File(recording.filePath).delete()
+                    recordingDao.delete(recording)
+                }
             }
-            if (oldFile.renameTo(newFile)) {
-                finalPath = newFile.absolutePath
-            } else {
-                renameSuccess = false
-                Toast.makeText(requireContext(), "Rename failed", Toast.LENGTH_SHORT).show()
-            }
-        }
-
-        if (renameSuccess) {
-            // Update the recording object in the database with the new path and isProcessed state
-            val updatedRecording = originalRecording.copy(filePath = finalPath, isProcessed = newIsProcessed)
-            lifecycleScope.launch {
-                recordingDao.update(updatedRecording)
-            }
-            Toast.makeText(requireContext(), "Changes saved", Toast.LENGTH_SHORT).show()
-        }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
-    // --- END OF MODIFICATION ---
 
-    private fun deleteRecording(recording: Recording) {
-        if (recording.id == currentlyPlaying?.id) {
-            stopPlayback()
-        }
-
-        lifecycleScope.launch {
-            recordingDao.delete(recording)
-            try {
-                File(recording.filePath).delete()
-            } catch (e: Exception) {
-                Log.e("RecordingsFragment", "Failed to delete file", e)
-            }
-            Toast.makeText(requireContext(), "Recording deleted", Toast.LENGTH_SHORT).show()
+    private fun toggleRecordingService() {
+        val intent = Intent(requireActivity(), RecordingService::class.java)
+        if (RecordingService.isRecording) {
+            requireActivity().stopService(intent)
+            binding.recordButton.text = "Start Recording"
+        } else {
+            requireActivity().startService(intent)
+            binding.recordButton.text = "Stop Recording"
         }
     }
 
-    override fun onStop() {
-        super.onStop()
+    override fun onResume() {
+        super.onResume()
+        binding.recordButton.text = if (RecordingService.isRecording) "Stop Recording" else "Start Recording"
+    }
+
+    override fun onPause() {
+        super.onPause()
         stopPlayback()
+        if (recordingAdapter.expandedPosition != -1) {
+            val oldPos = recordingAdapter.expandedPosition
+            recordingAdapter.expandedPosition = -1
+            recordingAdapter.notifyItemChanged(oldPos)
+        }
     }
 
     override fun onDestroyView() {

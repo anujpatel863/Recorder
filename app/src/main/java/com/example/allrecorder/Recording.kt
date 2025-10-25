@@ -20,12 +20,11 @@ import androidx.room.PrimaryKey
 data class Recording(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
-    val filePath: String,
+    var filePath: String,
     val startTime: Long, // Unix timestamp in milliseconds
     val duration: Long, // Duration in milliseconds
     var conversationId: Long? = null,
     var isProcessed: Boolean = false,
-    val transcript: String? = null,
-    var speakerLabels: String? = null // This will be populated by the worker
+    var transcript: String? = null, // Raw transcript
+    var speakerLabels: String? = null // JSON string of combined output
 )
-

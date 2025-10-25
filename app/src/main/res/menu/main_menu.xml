@@ -1,9 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <menu xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <!-- ADD THIS ITEM -->
+    <item
+        android:id="@+id/action_process_now"
+        android:title="Process Recordings"
+        android:icon="@drawable/ic_sync"
+        app:showAsAction="ifRoom" />
+
     <item
         android:id="@+id/action_group_conversations"
         android:title="@string/action_group_conversations"
-        android:icon="@android:drawable/ic_menu_sort_by_size"
-        app:showAsAction="ifRoom" />
+        app:showAsAction="never" />
 </menu>

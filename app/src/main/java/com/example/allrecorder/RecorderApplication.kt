@@ -1,37 +1,35 @@
 package com.example.allrecorder
 
 import android.app.Application
-import androidx.work.*
+import androidx.work.Constraints
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
 import java.util.concurrent.TimeUnit
 
 class RecorderApplication : Application() {
-
     override fun onCreate() {
         super.onCreate()
-        // Initialize the SettingsManager
-        SettingsManager.init(this)
-
-        scheduleDiarizationWorker()
+        setupRecurringWork()
     }
 
-    private fun scheduleDiarizationWorker() {
-        // Define the constraints for the work
+    private fun setupRecurringWork() {
         val constraints = Constraints.Builder()
-            .setRequiresCharging(true)      // Must be charging
-            .setRequiresDeviceIdle(true)    // Must be idle (screen off, unused for a while)
+            // Optional: Define constraints, e.g., run only when connected to a network
+            // .setRequiredNetworkType(NetworkType.CONNECTED)
             .build()
 
-        // Create a periodic request that runs roughly every 6 hours
-        val periodicWorkRequest = PeriodicWorkRequestBuilder<DiarizationWorker>(6, TimeUnit.HOURS)
-            .setConstraints(constraints)
-            .build()
+        // FIX: Use 15L (Long) instead of 15 (Int)
+        val repeatingRequest =
+            PeriodicWorkRequestBuilder<ProcessingWorker>(15L, TimeUnit.MINUTES)
+                .setConstraints(constraints)
+                .build()
 
-        // Enqueue the unique work. `KEEP` ensures that if a periodic work is already scheduled,
-        // it is not replaced.
-        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
-            "AutomaticDiarization",
-            ExistingPeriodicWorkPolicy.KEEP,
-            periodicWorkRequest
+        WorkManager.getInstance(applicationContext).enqueueUniquePeriodicWork(
+            ProcessingWorker.WORK_NAME,
+            ExistingPeriodicWorkPolicy.KEEP, // Keep the existing worker if it's already running
+            repeatingRequest
         )
     }
 }

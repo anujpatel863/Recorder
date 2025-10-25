@@ -2,44 +2,30 @@ package com.example.allrecorder
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.preference.PreferenceManager
 
 object SettingsManager {
 
-    private const val PREFS_NAME = "com.example.allrecorder.settings"
-    private lateinit var sharedPreferences: SharedPreferences
+    private lateinit var prefs: SharedPreferences
 
-    // Existing keys from your initial code
-    private const val KEY_CHUNK_DURATION = "chunk_duration_seconds"
-    private const val KEY_SILENCE_THRESHOLD = "silence_threshold_seconds"
-    private const val KEY_SMART_DETECTION = "smart_detection_enabled"
-
-    // --- START OF NEW CODE ---
-    private const val KEY_DIARIZATION_MODEL = "diarization_model"
-    const val MODEL_SMALL = "conformer_tisid_small.tflite"
-    const val MODEL_MEDIUM = "conformer_tisid_medium.tflite"
-    // --- END OF NEW CODE ---
-
+    private const val DIARIZATION_MODEL_KEY = "diarization_model"
+    private const val CHUNK_DURATION_KEY = "chunk_duration"
+    private const val SILENCE_SENSITIVITY_KEY = "silence_sensitivity"
+    private const val SPEAKER_STRICTNESS_KEY = "speaker_strictness"
 
     fun init(context: Context) {
-        sharedPreferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs = PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
     }
 
-    // Your existing settings
-    var chunkDurationSeconds: Int
-        get() = sharedPreferences.getInt(KEY_CHUNK_DURATION, 10) // Default 10s
-        set(value) = sharedPreferences.edit().putInt(KEY_CHUNK_DURATION, value).apply()
+    val selectedDiarizationModel: String
+        get() = prefs.getString(DIARIZATION_MODEL_KEY, "conformer_tisid_medium.tflite") ?: "conformer_tisid_medium.tflite"
 
-    var silenceThresholdSeconds: Int
-        get() = sharedPreferences.getInt(KEY_SILENCE_THRESHOLD, 5) // Default 5s
-        set(value) = sharedPreferences.edit().putInt(KEY_SILENCE_THRESHOLD, value).apply()
+    val chunkDurationMillis: Long
+        get() = prefs.getString(CHUNK_DURATION_KEY, "-1")?.toLong() ?: -1L
+    val silenceSensitivitySeconds: Int
+        get() = prefs.getInt(SILENCE_SENSITIVITY_KEY, 10)
 
-    var isSmartDetectionEnabled: Boolean
-        get() = sharedPreferences.getBoolean(KEY_SMART_DETECTION, true)
-        set(value) = sharedPreferences.edit().putBoolean(KEY_SMART_DETECTION, value).apply()
-
-    // --- START OF NEW CODE ---
-    var selectedDiarizationModel: String
-        get() = sharedPreferences.getString(KEY_DIARIZATION_MODEL, MODEL_SMALL) ?: MODEL_SMALL
-        set(value) = sharedPreferences.edit().putString(KEY_DIARIZATION_MODEL, value).apply()
-    // --- END OF NEW CODE ---
+    // SeekBarPreference saves as int, so we retrieve int and convert to float for the worker
+    val speakerStrictnessThreshold: Float
+        get() = prefs.getInt(SPEAKER_STRICTNESS_KEY, 85) / 100.0f
 }

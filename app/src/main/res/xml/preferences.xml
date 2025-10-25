@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <PreferenceCategory app:title="Recording">
+
+        <ListPreference
+            app:key="chunk_duration"
+            app:title="Recording Chunk Duration"
+            app:summary="Automatically save and start a new file after a set time"
+            app:entries="@array/chunk_duration_entries"
+            app:entryValues="@array/chunk_duration_values"
+            app:defaultValue="-1"
+            app:useSimpleSummaryProvider="true"/>
+
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="Processing">
+
+        <ListPreference
+            app:key="diarization_model"
+            app:title="Diarization Model"
+            app:summary="High accuracy is slower, high speed is faster"
+            app:entries="@array/diarization_model_entries"
+            app:entryValues="@array/diarization_model_values"
+            app:defaultValue="conformer_tisid_medium.tflite"
+            app:useSimpleSummaryProvider="true"/>
+
+        <SeekBarPreference
+            app:key="silence_sensitivity"
+            app:title="Silence Sensitivity"
+            app:summary="The duration of silence that triggers a new conversation"
+            app:defaultValue="10"
+            app:min="3"
+            android:max="30"
+            app:showSeekBarValue="true"/>
+
+        <SeekBarPreference
+            app:key="speaker_strictness"
+            app:title="Speaker Detection Strictness"
+            app:summary="How similar voices must be to be the same person"
+            app:defaultValue="85"
+            app:min="70"
+            android:max="95"
+            app:showSeekBarValue="true"/>
+
+    </PreferenceCategory>
+
+</PreferenceScreen>

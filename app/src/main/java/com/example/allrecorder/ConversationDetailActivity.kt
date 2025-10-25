@@ -4,32 +4,23 @@ import android.media.MediaPlayer
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.MenuItem
 import android.widget.SeekBar
-import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.example.allrecorder.databinding.ActivityConversationDetailBinding
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import java.io.IOException
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import java.util.concurrent.TimeUnit
 
 class ConversationDetailActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityConversationDetailBinding
     private lateinit var recordingDao: RecordingDao
-    private var conversation: Conversation? = null
+    private var conversationId: Long = -1
 
     private var mediaPlayer: MediaPlayer? = null
-    private var recordings: List<Recording> = emptyList()
-    private var currentTrackIndex = 0
-    private var totalDuration: Long = 0
-    private var currentPlaybackPosition: Int = 0
-
+    private var recording: Recording? = null
     private val handler = Handler(Looper.getMainLooper())
+    private lateinit var progressUpdater: Runnable
 
     companion object {
         const val EXTRA_CONVERSATION_ID = "extra_conversation_id"
@@ -39,51 +30,57 @@ class ConversationDetailActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityConversationDetailBinding.inflate(layoutInflater)
         setContentView(binding.root)
+
+        setSupportActionBar(binding.toolbar)
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
 
         recordingDao = AppDatabase.getDatabase(this).recordingDao()
+        conversationId = intent.getLongExtra(EXTRA_CONVERSATION_ID, -1)
 
-        val conversationId = intent.getLongExtra(EXTRA_CONVERSATION_ID, -1)
-        if (conversationId == -1L) {
-            finish()
-            return
-        }
-
-        lifecycleScope.launch {
-            // Fetch the conversation details and associated recordings
-            conversation = AppDatabase.getDatabase(this@ConversationDetailActivity)
-                .conversationDao().getConversationById(conversationId).first()
-            recordings = recordingDao.getRecordingsForConversation(conversationId).first()
-
-            if (recordings.isEmpty()) {
-                Toast.makeText(this@ConversationDetailActivity, "No recordings found for this conversation.", Toast.LENGTH_SHORT).show()
-                finish()
-                return@launch
-            }
-
-            setupUI()
-            setupPlayback()
+        if (conversationId != -1L) {
+            loadConversationDetails()
+            setupPlayerControls()
+        } else {
+            binding.transcriptTextView.text = "Error: Conversation not found."
         }
     }
 
-    private fun setupUI() {
-        conversation?.let {
-            title = "Conversation Details"
-            binding.tvConversationTitle.text = it.title
-            val startTime = formatTime(it.startTime)
-            val endTime = formatTime(it.endTime)
-            binding.tvConversationTimeRange.text = "$startTime - $endTime"
+    private fun loadConversationDetails() {
+        lifecycleScope.launch {
+            recording = recordingDao.getRecordingByConversationId(conversationId)
+            if (recording != null) {
+                supportActionBar?.title = "Conversation Details"
+                binding.transcriptTextView.text = recording!!.transcript ?: "No transcript available."
+                binding.totalDurationTextView.text = formatDuration(recording!!.duration)
+                binding.seekBar.max = recording!!.duration.toInt()
+            } else {
+                supportActionBar?.title = "Error"
+                binding.transcriptTextView.text = "Could not load conversation details."
+            }
+        }
+    }
+
+    private fun setupPlayerControls() {
+        binding.playPauseButton.setOnClickListener {
+            if (mediaPlayer?.isPlaying == true) {
+                pausePlayback()
+            } else {
+                startPlayback()
+            }
         }
 
-        totalDuration = recordings.sumOf { it.duration }
-        binding.seekBar.max = totalDuration.toInt()
-        binding.tvTotalDuration.text = formatDuration(totalDuration)
+        binding.rewindButton.setOnClickListener {
+            mediaPlayer?.let { it.seekTo(it.currentPosition - 5000) }
+        }
 
-        binding.btnPlay.setOnClickListener { playOrPause() }
+        binding.forwardButton.setOnClickListener {
+            mediaPlayer?.let { it.seekTo(it.currentPosition + 5000) }
+        }
+
         binding.seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 if (fromUser) {
-                    seekTo(progress)
+                    mediaPlayer?.seekTo(progress)
                 }
             }
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
@@ -91,123 +88,74 @@ class ConversationDetailActivity : AppCompatActivity() {
         })
     }
 
-    private fun setupPlayback() {
-        currentTrackIndex = 0
-        playCurrentTrack()
-    }
+    private fun startPlayback() {
+        if (recording == null) return
 
-    private fun playCurrentTrack() {
-        if (currentTrackIndex >= recordings.size) {
-            // Reached the end of the conversation
-            stopPlayback()
-            return
-        }
-
-        mediaPlayer?.release() // Release any previous instance
-        mediaPlayer = MediaPlayer().apply {
-            try {
-                setDataSource(recordings[currentTrackIndex].filePath)
-                prepareAsync()
-                setOnPreparedListener {
-                    it.start()
-                    binding.btnPlay.setImageResource(android.R.drawable.ic_media_pause)
-                    handler.post(updateSeekBarTask)
-                }
-                setOnCompletionListener {
-                    currentPlaybackPosition += recordings[currentTrackIndex].duration.toInt()
-                    currentTrackIndex++
-                    playCurrentTrack()
-                }
-            } catch (e: IOException) {
-                Toast.makeText(this@ConversationDetailActivity, "Could not play file.", Toast.LENGTH_SHORT).show()
-                stopPlayback()
-            }
-        }
-    }
-
-    private fun playOrPause() {
-        mediaPlayer?.let {
-            if (it.isPlaying) {
-                it.pause()
-                binding.btnPlay.setImageResource(android.R.drawable.ic_media_play)
-                handler.removeCallbacks(updateSeekBarTask)
-            } else {
-                it.start()
-                binding.btnPlay.setImageResource(android.R.drawable.ic_media_pause)
-                handler.post(updateSeekBarTask)
-            }
-        }
-    }
-
-    private val updateSeekBarTask = object : Runnable {
-        override fun run() {
-            mediaPlayer?.let {
-                if (it.isPlaying) {
-                    val progress = currentPlaybackPosition + it.currentPosition
-                    binding.seekBar.progress = progress
-                    binding.tvCurrentTime.text = formatDuration(progress.toLong())
-                    handler.postDelayed(this, 100)
+        if (mediaPlayer == null) {
+            mediaPlayer = MediaPlayer().apply {
+                try {
+                    setDataSource(recording!!.filePath)
+                    prepare()
+                    setOnCompletionListener {
+                        stopPlayback(resetIcon = true)
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    return
                 }
             }
         }
+        mediaPlayer?.start()
+        binding.playPauseButton.setImageResource(R.drawable.ic_pause)
+        startUpdatingProgress()
     }
 
-    private fun seekTo(position: Int) {
-        var accumulatedDuration = 0
-        var targetTrack = -1
-        var seekInTrack = 0
-
-        for ((index, recording) in recordings.withIndex()) {
-            if (position < accumulatedDuration + recording.duration) {
-                targetTrack = index
-                seekInTrack = position - accumulatedDuration
-                break
-            }
-            accumulatedDuration += recording.duration.toInt()
-        }
-
-        if (targetTrack != -1) {
-            currentTrackIndex = targetTrack
-            currentPlaybackPosition = accumulatedDuration
-            playCurrentTrack()
-            mediaPlayer?.setOnPreparedListener {
-                it.seekTo(seekInTrack)
-                it.start()
-                binding.btnPlay.setImageResource(android.R.drawable.ic_media_pause)
-                handler.post(updateSeekBarTask)
-            }
-        }
+    private fun pausePlayback() {
+        mediaPlayer?.pause()
+        binding.playPauseButton.setImageResource(R.drawable.ic_play_arrow)
+        stopUpdatingProgress()
     }
 
-
-    private fun stopPlayback() {
-        handler.removeCallbacks(updateSeekBarTask)
+    private fun stopPlayback(resetIcon: Boolean = false) {
         mediaPlayer?.release()
         mediaPlayer = null
-        binding.btnPlay.setImageResource(android.R.drawable.ic_media_play)
+        stopUpdatingProgress()
         binding.seekBar.progress = 0
-        binding.tvCurrentTime.text = formatDuration(0)
+        binding.currentTimeTextView.text = formatDuration(0)
+        if (resetIcon) {
+            binding.playPauseButton.setImageResource(R.drawable.ic_play_arrow)
+        }
     }
 
-    private fun formatDuration(millis: Long): String {
-        val minutes = TimeUnit.MILLISECONDS.toMinutes(millis)
-        val seconds = TimeUnit.MILLISECONDS.toSeconds(millis) % 60
-        return String.format("%02d:%02d", minutes, seconds)
+    private fun startUpdatingProgress() {
+        progressUpdater = Runnable {
+            mediaPlayer?.let { player ->
+                if (player.isPlaying) {
+                    binding.seekBar.progress = player.currentPosition
+                    binding.currentTimeTextView.text = formatDuration(player.currentPosition.toLong())
+                    handler.postDelayed(progressUpdater, 250)
+                }
+            }
+        }
+        handler.post(progressUpdater)
     }
 
-    private fun formatTime(timestamp: Long): String {
-        val date = Date(timestamp)
-        val format = SimpleDateFormat("h:mm a", Locale.getDefault())
-        return format.format(date)
+    private fun stopUpdatingProgress() {
+        if (::progressUpdater.isInitialized) {
+            handler.removeCallbacks(progressUpdater)
+        }
     }
 
-    override fun onSupportNavigateUp(): Boolean {
-        onBackPressedDispatcher.onBackPressed()
-        return true
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
+        if (item.itemId == android.R.id.home) {
+            onBackPressedDispatcher.onBackPressed()
+            return true
+        }
+        return super.onOptionsItemSelected(item)
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
+    override fun onPause() {
+        super.onPause()
         stopPlayback()
     }
 }

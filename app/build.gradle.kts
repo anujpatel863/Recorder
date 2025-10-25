@@ -80,4 +80,11 @@ dependencies {
     androidTestImplementation(libs.androidx.espresso.core)
 
     implementation("com.google.code.gson:gson:2.10.1")
+    // ONNX Runtime for ASR Model
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.15.0")
+    // For creating a settings screen
+    implementation("androidx.preference:preference-ktx:1.2.1")
+
+    implementation("com.github.wendykierp:JTransforms:3.1")
+
 }

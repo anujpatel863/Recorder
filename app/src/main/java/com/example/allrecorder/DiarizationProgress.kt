@@ -1,7 +1,8 @@
 package com.example.allrecorder
 
 /**
- * A data class to hold detailed information about the diarization progress.
+ * A data class to hold detailed information about the processing progress.
+ * This is used by the ProcessingWorker to report its status.
  */
 data class DiarizationProgress(
     val progressPercentage: Int,

@@ -3,142 +3,142 @@ package com.example.allrecorder
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.ImageButton
+import android.widget.LinearLayout
 import android.widget.SeekBar
+import android.widget.TextView
+import androidx.appcompat.widget.PopupMenu
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
-import com.example.allrecorder.databinding.ItemRecordingBinding
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import java.util.concurrent.TimeUnit
 
+// Helper function to format milliseconds into MM:SS format
+fun formatDuration(millis: Long): String {
+    val minutes = TimeUnit.MILLISECONDS.toMinutes(millis)
+    val seconds = TimeUnit.MILLISECONDS.toSeconds(millis) % 60
+    return String.format("%02d:%02d", minutes, seconds)
+}
+
 class RecordingAdapter(
-    private val onPlayClicked: (Recording) -> Unit,
-    private val onPauseClicked: () -> Unit,
-    private val onSeekBarChanged: (Int) -> Unit,
-    private val onEditClicked: (Recording) -> Unit,
-    private val onDeleteClicked: (Recording) -> Unit
-) : ListAdapter<Recording, RecordingAdapter.RecordingViewHolder>(RecordingDiffCallback()) {
+    private val listener: AdapterListener
+) : ListAdapter<Recording, RecordingAdapter.RecordingViewHolder>(RecordingDiffCallback) {
 
-    var currentlyPlayingId: Long? = null
-    var currentProgress: Int = 0
-    var isPlaying: Boolean = false
-
-    fun setPlaybackState(playingId: Long?, progress: Int, isPlaying: Boolean) {
-        val previousPlayingId = currentlyPlayingId
-        currentlyPlayingId = playingId
-        currentProgress = progress
-        this.isPlaying = isPlaying
-
-        if (previousPlayingId != null && previousPlayingId != playingId) {
-            val oldPosition = currentList.indexOfFirst { it.id == previousPlayingId }
-            if (oldPosition != -1) notifyItemChanged(oldPosition)
-        }
-
-        if (playingId != null) {
-            val newPosition = currentList.indexOfFirst { it.id == playingId }
-            if (newPosition != -1) notifyItemChanged(newPosition)
-        }
+    // Interface to communicate events from the adapter to the Fragment
+    interface AdapterListener {
+        fun onItemClicked(position: Int)
+        fun onPlayPauseClicked(recording: Recording)
+        fun onRewindClicked()
+        fun onForwardClicked()
+        fun onSeekBarChanged(progress: Int, fromUser: Boolean)
+        fun onRenameClicked(recording: Recording)
+        fun onDeleteClicked(recording: Recording)
     }
 
+    var expandedPosition = -1
+    var isPlaying = false
+
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecordingViewHolder {
-        val binding = ItemRecordingBinding.inflate(LayoutInflater.from(parent.context), parent, false)
-        return RecordingViewHolder(binding, onSeekBarChanged)
+        val view = LayoutInflater.from(parent.context)
+            .inflate(R.layout.item_recording, parent, false)
+        return RecordingViewHolder(view)
     }
 
     override fun onBindViewHolder(holder: RecordingViewHolder, position: Int) {
-        val recording = getItem(position)
-        val isCurrentlyActive = recording.id == currentlyPlayingId
-        holder.bind(
-            recording,
-            isCurrentlyActive,
-            isPlaying,
-            currentProgress,
-            onPlayClicked,
-            onPauseClicked,
-            onEditClicked,
-            onDeleteClicked
-        )
+        holder.bind(getItem(position))
     }
 
-    class RecordingViewHolder(
-        private val binding: ItemRecordingBinding,
-        private val onSeekBarChanged: (Int) -> Unit
-    ) : RecyclerView.ViewHolder(binding.root) {
+    inner class RecordingViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
+        // Main Views
+        private val fileNameTextView: TextView = itemView.findViewById(R.id.fileNameTextView)
+        private val durationTextView: TextView = itemView.findViewById(R.id.durationTextView)
+        private val optionsMenuButton: ImageButton = itemView.findViewById(R.id.optionsMenuButton)
+        private val transcriptTextView: TextView = itemView.findViewById(R.id.transcriptTextView)
 
-        fun bind(
-            recording: Recording,
-            isCurrentlyActive: Boolean,
-            isPlaying: Boolean,
-            progress: Int,
-            onPlayClicked: (Recording) -> Unit,
-            onPauseClicked: () -> Unit,
-            onEditClicked: (Recording) -> Unit,
-            onDeleteClicked: (Recording) -> Unit
-        ) {
-            binding.tvFileName.text = File(recording.filePath).name
-            binding.tvTimestamp.text = formatDate(recording.startTime)
-            binding.tvDuration.text = formatDuration(recording.duration)
-            binding.seekBar.max = recording.duration.toInt()
+        // Player Views
+        private val playerControlsLayout: LinearLayout = itemView.findViewById(R.id.playerControlsLayout)
+        val currentTimeTextView: TextView = itemView.findViewById(R.id.currentTimeTextView)
+        val totalDurationTextView: TextView = itemView.findViewById(R.id.totalDurationTextView)
+        val seekBar: SeekBar = itemView.findViewById(R.id.seekBar)
+        private val playPauseButton: ImageButton = itemView.findViewById(R.id.playPauseButton)
+        private val rewindButton: ImageButton = itemView.findViewById(R.id.rewindButton)
+        private val forwardButton: ImageButton = itemView.findViewById(R.id.forwardButton)
 
-            // --- START OF CHANGES ---
-
-            // Show or hide the processed icon based on the recording's state
-            binding.ivProcessed.visibility = if (recording.isProcessed) {
-                View.VISIBLE
-            } else {
-                View.GONE
-            }
-
-            // --- END OF CHANGES ---
-
-            if (isCurrentlyActive) {
-                binding.seekBar.progress = progress
-                if (isPlaying) {
-                    binding.btnPlay.visibility = View.GONE
-                    binding.btnPause.visibility = View.VISIBLE
-                } else {
-                    binding.btnPlay.visibility = View.VISIBLE
-                    binding.btnPause.visibility = View.GONE
+        init {
+            itemView.setOnClickListener {
+                // Use the modern and safer 'bindingAdapterPosition'
+                val position = bindingAdapterPosition
+                if (position != RecyclerView.NO_POSITION) {
+                    listener.onItemClicked(position)
                 }
+            }
+        }
+
+        fun bind(recording: Recording) {
+            // Use the modern and safer 'bindingAdapterPosition'
+            val position = bindingAdapterPosition
+            val isExpanded = position == expandedPosition
+
+            // Toggle visibility of the player and transcript
+            playerControlsLayout.visibility = if (isExpanded) View.VISIBLE else View.GONE
+            transcriptTextView.visibility = if (isExpanded) View.VISIBLE else View.GONE
+
+            // Bind common data
+            fileNameTextView.text = File(recording.filePath).name
+            durationTextView.text = formatDuration(recording.duration)
+            transcriptTextView.text = if (recording.isProcessed) {
+                recording.transcript ?: "No speech detected."
             } else {
-                binding.seekBar.progress = 0
-                binding.btnPlay.visibility = View.VISIBLE
-                binding.btnPause.visibility = View.GONE
+                "Awaiting processing..."
             }
 
-            binding.btnPlay.setOnClickListener { onPlayClicked(recording) }
-            binding.btnPause.setOnClickListener { onPauseClicked() }
-            binding.btnEdit.setOnClickListener { onEditClicked(recording) }
-            binding.btnDelete.setOnClickListener { onDeleteClicked(recording) }
-            binding.seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                    if (fromUser && isCurrentlyActive) {
-                        onSeekBarChanged(progress)
+            // Bind data and set listeners only for the expanded view
+            if (isExpanded) {
+                playPauseButton.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play_arrow)
+                totalDurationTextView.text = formatDuration(recording.duration)
+                seekBar.max = recording.duration.toInt()
+
+                playPauseButton.setOnClickListener { listener.onPlayPauseClicked(recording) }
+                rewindButton.setOnClickListener { listener.onRewindClicked() }
+                forwardButton.setOnClickListener { listener.onForwardClicked() }
+
+                seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                        listener.onSeekBarChanged(progress, fromUser)
                     }
+                    override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+                    override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+                })
+            }
+
+            optionsMenuButton.setOnClickListener { view ->
+                showPopupMenu(view, recording)
+            }
+        }
+
+        private fun showPopupMenu(view: View, recording: Recording) {
+            val popup = PopupMenu(view.context, view)
+            popup.inflate(R.menu.recording_options_menu)
+            popup.setOnMenuItemClickListener { item ->
+                when (item.itemId) {
+                    R.id.action_rename -> {
+                        listener.onRenameClicked(recording)
+                        true
+                    }
+                    R.id.action_delete -> {
+                        listener.onDeleteClicked(recording)
+                        true
+                    }
+                    else -> false
                 }
-                override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-                override fun onStopTrackingTouch(seekBar: SeekBar?) {}
-            })
-        }
-
-        private fun formatDate(timestamp: Long): String {
-            val date = Date(timestamp)
-            val format = SimpleDateFormat("MMM dd, yyyy h:mm a", Locale.getDefault())
-            return format.format(date)
-        }
-
-        private fun formatDuration(millis: Long): String {
-            val seconds = TimeUnit.MILLISECONDS.toSeconds(millis) % 60
-            val minutes = TimeUnit.MILLISECONDS.toMinutes(millis)
-            return String.format("%02d:%02d", minutes, seconds)
+            }
+            popup.show()
         }
     }
 }
 
-class RecordingDiffCallback : DiffUtil.ItemCallback<Recording>() {
+object RecordingDiffCallback : DiffUtil.ItemCallback<Recording>() {
     override fun areItemsTheSame(oldItem: Recording, newItem: Recording): Boolean {
         return oldItem.id == newItem.id
     }
