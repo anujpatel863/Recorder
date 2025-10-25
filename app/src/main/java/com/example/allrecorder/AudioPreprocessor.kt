@@ -15,7 +15,7 @@ class AudioPreprocessor(context: Context) {
     private val nFft: Int = 512
     private val nWindowSize: Int = 400
     private val nHopLength: Int = 160
-    private val nMels: Int = 80
+    val nMels: Int = 80
     private val fMin: Float = 0.0f
     private val fMax: Float = 8000.0f
     private val power: Float = 2.0f
@@ -28,7 +28,8 @@ class AudioPreprocessor(context: Context) {
     private val melBasisMatrix: Array<FloatArray>
 
     init {
-        melBasisMatrix = loadMelBasis(context, "mel_basis_80_512.txt")
+        val melBasisPath = "indic_model/mel_basis_80_512.txt"
+        melBasisMatrix = loadMelBasis(context, melBasisPath)
         if (melBasisMatrix.isEmpty() || melBasisMatrix[0].isEmpty()) {
             throw RuntimeException("Failed to load Mel Basis Matrix")
         }

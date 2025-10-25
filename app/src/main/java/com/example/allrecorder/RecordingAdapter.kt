@@ -13,6 +13,7 @@ import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
 import java.io.File
 import java.util.concurrent.TimeUnit
+import android.widget.Button
 
 // Helper function to format milliseconds into MM:SS format
 fun formatDuration(millis: Long): String {
@@ -34,6 +35,7 @@ class RecordingAdapter(
         fun onSeekBarChanged(progress: Int, fromUser: Boolean)
         fun onRenameClicked(recording: Recording)
         fun onDeleteClicked(recording: Recording)
+        fun onTranscribeClicked(recording: Recording)
     }
 
     var expandedPosition = -1
@@ -55,6 +57,7 @@ class RecordingAdapter(
         private val durationTextView: TextView = itemView.findViewById(R.id.durationTextView)
         private val optionsMenuButton: ImageButton = itemView.findViewById(R.id.optionsMenuButton)
         private val transcriptTextView: TextView = itemView.findViewById(R.id.transcriptTextView)
+        private val transcribeButton: Button = itemView.findViewById(R.id.transcribeButton)
 
         // Player Views
         private val playerControlsLayout: LinearLayout = itemView.findViewById(R.id.playerControlsLayout)
@@ -103,6 +106,14 @@ class RecordingAdapter(
                 rewindButton.setOnClickListener { listener.onRewindClicked() }
                 forwardButton.setOnClickListener { listener.onForwardClicked() }
 
+                transcribeButton.setOnClickListener {
+                    listener.onTranscribeClicked(recording)
+                    // Show loading state on button
+                    it.isEnabled = false
+                    (it as Button).text = "..."
+                }
+                transcribeButton.isEnabled = true
+                transcribeButton.text = "Transcribe"
                 seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                     override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                         listener.onSeekBarChanged(progress, fromUser)

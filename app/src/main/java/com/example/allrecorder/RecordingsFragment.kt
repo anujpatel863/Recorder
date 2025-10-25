@@ -16,12 +16,14 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import com.example.allrecorder.databinding.FragmentRecordingsBinding
 import kotlinx.coroutines.launch
 import java.io.File
-
+import android.util.Log
+import kotlinx.coroutines.Dispatchers
 class RecordingsFragment : Fragment() {
 
     private var _binding: FragmentRecordingsBinding? = null
     private val binding get() = _binding!!
     private lateinit var recordingDao: RecordingDao
+    private lateinit var asrService: AsrService
 
     private var mediaPlayer: MediaPlayer? = null
     private var currentPlayingRecording: Recording? = null
@@ -64,6 +66,9 @@ class RecordingsFragment : Fragment() {
             override fun onDeleteClicked(recording: Recording) {
                 showDeleteConfirmationDialog(recording)
             }
+            override fun onTranscribeClicked(recording: Recording) {
+                transcribeRecording(recording)
+            }
         })
     }
 
@@ -72,6 +77,8 @@ class RecordingsFragment : Fragment() {
         savedInstanceState: Bundle?
     ): View {
         _binding = FragmentRecordingsBinding.inflate(inflater, container, false)
+        SettingsManager.init(requireContext())
+        asrService = AsrService(requireContext())
         return binding.root
     }
 
@@ -239,6 +246,31 @@ class RecordingsFragment : Fragment() {
             binding.recordButton.text = "Stop Recording"
         }
     }
+    private fun transcribeRecording(recording: Recording) {
+        viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
+            val language = SettingsManager.asrLanguage
+            val decoder = SettingsManager.asrDecoder
+
+            // Run transcription
+            val transcript = try {
+                if (decoder == "rnnt") {
+                    asrService.transcribeRnnt(recording.filePath, language)
+                } else {
+                    asrService.transcribeCtc(recording.filePath, language)
+                }
+            } catch (e: Exception) {
+                Log.e("RecordingsFragment", "Transcription failed", e)
+                "[Transcription Failed: ${e.message}]"
+            }
+
+            // Save to database
+            recording.transcript = transcript
+            recording.isProcessed = true // Mark as processed
+            recordingDao.update(recording)
+
+            // UI will update automatically via LiveData
+        }
+    }
 
     override fun onResume() {
         super.onResume()
@@ -257,6 +289,7 @@ class RecordingsFragment : Fragment() {
 
     override fun onDestroyView() {
         super.onDestroyView()
+        asrService.close()
         _binding = null
     }
 }

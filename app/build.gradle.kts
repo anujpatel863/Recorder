@@ -70,6 +70,7 @@ dependencies {
     // Coroutines for background tasks
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 
+
     // Lifecycle for Service
     implementation("androidx.lifecycle:lifecycle-service:2.7.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
@@ -81,7 +82,7 @@ dependencies {
 
     implementation("com.google.code.gson:gson:2.10.1")
     // ONNX Runtime for ASR Model
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.15.0")
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.18.0")
     // For creating a settings screen
     implementation("androidx.preference:preference-ktx:1.2.1")
 

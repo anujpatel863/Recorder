@@ -45,5 +45,26 @@
             app:showSeekBarValue="true"/>
 
     </PreferenceCategory>
+    <PreferenceCategory app:title="Transcription (ASR)">
+
+        <ListPreference
+            app:key="asr_language"
+            app:title="Transcription Language"
+            app:summary="Select the language of the audio"
+            app:entries="@array/asr_language_entries"
+            app:entryValues="@array/asr_language_values"
+            app:defaultValue="gu"
+            app:useSimpleSummaryProvider="true"/>
+
+        <ListPreference
+            app:key="asr_decoder"
+            app:title="Decoder Type"
+            app:summary="RNN-T is higher quality but slower. CTC is faster."
+            app:entries="@array/asr_decoder_entries"
+            app:entryValues="@array/asr_decoder_values"
+            app:defaultValue="ctc"
+            app:useSimpleSummaryProvider="true"/>
+
+    </PreferenceCategory>
 
 </PreferenceScreen>

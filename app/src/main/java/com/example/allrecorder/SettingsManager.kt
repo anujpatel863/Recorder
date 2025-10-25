@@ -12,6 +12,8 @@ object SettingsManager {
     private const val CHUNK_DURATION_KEY = "chunk_duration"
     private const val SILENCE_SENSITIVITY_KEY = "silence_sensitivity"
     private const val SPEAKER_STRICTNESS_KEY = "speaker_strictness"
+    private const val ASR_LANGUAGE_KEY = "asr_language"
+    private const val ASR_DECODER_KEY = "asr_decoder"
 
     fun init(context: Context) {
         prefs = PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
@@ -28,4 +30,9 @@ object SettingsManager {
     // SeekBarPreference saves as int, so we retrieve int and convert to float for the worker
     val speakerStrictnessThreshold: Float
         get() = prefs.getInt(SPEAKER_STRICTNESS_KEY, 85) / 100.0f
+    val asrLanguage: String
+        get() = prefs.getString(ASR_LANGUAGE_KEY, "gu") ?: "gu"
+
+    val asrDecoder: String
+        get() = prefs.getString(ASR_DECODER_KEY, "ctc") ?: "ctc"
 }

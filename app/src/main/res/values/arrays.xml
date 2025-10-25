@@ -30,4 +30,25 @@
         <item>900000</item>
         <item>1800000</item>
         <item>-1</item> </string-array>
+    <string-array name="asr_language_entries">
+        <item>Gujarati</item>
+        <item>Hindi</item>
+        <item>English</item>
+    </string-array>
+
+    <string-array name="asr_language_values">
+        <item>gu</item>
+        <item>hi</item>
+        <item>en</item>
+    </string-array>
+
+    <string-array name="asr_decoder_entries">
+        <item>CTC (Fast)</item>
+        <item>RNN-T (High Quality)</item>
+    </string-array>
+
+    <string-array name="asr_decoder_values">
+        <item>ctc</item>
+        <item>rnnt</item>
+    </string-array>
 </resources>
