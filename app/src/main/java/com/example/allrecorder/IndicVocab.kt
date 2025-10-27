@@ -9,10 +9,16 @@ class IndicVocab(context: Context) {
 
     // This will hold maps like "gu" -> [token1, token2, ...]
     private val vocabMap: Map<String, List<String>>
-    val blankId: Int = 256 // From simple_inference.py
-    val sosId: Int = 256 // From simple_inference.py
+
+    // --- FIX: Corrected special token IDs for the ai4bharat model ---
+    val unkId: Int = 0    // <unk>
+    val sosId: Int = 1    // <s> (Start of Sentence)
+    val eosId: Int = 2    // </s> (End of Sentence)
+    val blankId: Int = 0  // CTC blank token is the same as <unk>
+    // --- End of Fix ---
 
     init {
+        // This path must point to your new vocab.json
         val path = "indic_model/vocab.json"
         vocabMap = try {
             val jsonStream = context.assets.open(path)
@@ -35,7 +41,10 @@ class IndicVocab(context: Context) {
         val vocab = getVocabFor(language) ?: return "ERROR: No vocab for '$language'"
         val sb = StringBuilder()
         for (id in tokenIds) {
-            if (id != sosId && id != blankId) {
+
+            // --- FIX: Filter out all special tokens ---
+            if (id != unkId && id != sosId && id != eosId && id != blankId) {
+                // --- End of Fix ---
                 if (id < vocab.size) {
                     sb.append(vocab[id])
                 } else {
@@ -43,7 +52,7 @@ class IndicVocab(context: Context) {
                 }
             }
         }
-        // From simple_inference.py: .replace('\u2581', ' ').strip()
+        // From HuggingFace processor: .replace(" ", " ").strip()
         return sb.toString().replace("\u2581", " ").trim()
     }
 }

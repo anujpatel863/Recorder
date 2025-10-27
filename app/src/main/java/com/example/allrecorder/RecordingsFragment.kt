@@ -18,6 +18,8 @@ import kotlinx.coroutines.launch
 import java.io.File
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlin.math.log
+
 class RecordingsFragment : Fragment() {
 
     private var _binding: FragmentRecordingsBinding? = null
@@ -258,11 +260,13 @@ class RecordingsFragment : Fragment() {
                 } else {
                     asrService.transcribeCtc(recording.filePath, language)
                 }
+
             } catch (e: Exception) {
                 Log.e("RecordingsFragment", "Transcription failed", e)
                 "[Transcription Failed: ${e.message}]"
             }
-
+            Log.d(tag,"decoder completed")
+            Log.d(tag,transcript)
             // Save to database
             recording.transcript = transcript
             recording.isProcessed = true // Mark as processed
