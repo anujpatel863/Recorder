@@ -8,6 +8,10 @@ import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import ai.onnxruntime.OrtSession.SessionOptions
+import org.pytorch.IValue
+import org.pytorch.LiteModuleLoader
+import org.pytorch.Module
+import org.pytorch.Tensor
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
@@ -25,8 +29,11 @@ import kotlin.math.max // Needed for log_softmax stability
 class AsrService(private val context: Context) {
 
     private val ortEnvironment: OrtEnvironment = OrtEnvironment.getEnvironment()
-    val preprocessor: AudioPreprocessor // Ensure this uses utterance normalization now
-    val vocab: IndicVocab // Ensure this has corrected blank/sos IDs
+    // --- MODIFIED: Removed AudioPreprocessor, added PyTorch Module ---
+    // val preprocessor: AudioPreprocessor // No longer needed
+    private var preprocessorModule: Module? = null // For preprocessor.ts
+    val vocab: IndicVocab
+    // --- END MODIFICATION ---
 
     // --- Model Sessions ---
     private var encoderSession: OrtSession? = null
@@ -35,17 +42,17 @@ class AsrService(private val context: Context) {
     private var jointPredSession: OrtSession? = null
     private var jointPreNetSession: OrtSession? = null
     private val postNetSessions = mutableMapOf<String, OrtSession?>()
-    private var ctcDecoderSession: OrtSession? = null // Keep CTC as well
+    private var ctcDecoderSession: OrtSession? = null
 
     // --- State ---
     private var areRnntModelsLoaded = false
-    private var isCtcDecoderLoaded = false // Keep CTC state
+    private var isCtcDecoderLoaded = false
     private val loadingLock = Any()
 
     // --- Constants (Match Python Script) ---
     private val rnntMaxSymbolsPerStep = 10
     private val predRnnLayers = 2
-    private val predRnnHiddenDim = 640 // Example: Joint/Decoder hidden dimension
+    private val predRnnHiddenDim = 640
     private val TARGET_SAMPLE_RATE = 16000
 
     companion object {
@@ -53,23 +60,26 @@ class AsrService(private val context: Context) {
     }
 
     init {
-        preprocessor = AudioPreprocessor(context) // Assumes correct implementation
-        vocab = IndicVocab(context) // Assumes corrected IDs
+        // --- MODIFIED: Don't init preprocessor ---
+        // preprocessor = AudioPreprocessor(context)
+        vocab = IndicVocab(context)
         Log.d(TAG, "AsrService initialized.")
-        // Optionally pre-load models here if desired
-        // ensureRnntModelsLoaded()
-        // ensureCtcModelsLoaded()
     }
 
-    // --- Lazy Loading Functions (Keep existing logic, ensure filenames match) ---
-    // --- Make sure these load the *quantized* encoder if that's what python uses ---
     @Synchronized
     private fun ensureRnntModelsLoaded(): Boolean {
         synchronized(loadingLock) {
             if (areRnntModelsLoaded && !areAnyRnntSessionsClosed()) return true
-            Log.i(TAG, "Starting lazy loading of RNN-T ONNX models...")
+            Log.i(TAG, "Starting lazy loading of RNN-T ONNX models and PyTorch Preprocessor...")
             try {
-                // *** IMPORTANT: Match USE_QUANTIZED_ENCODER = True from Python ***
+                // --- ADDED: Load PyTorch Preprocessor ---
+                if (preprocessorModule == null) {
+                    val preprocessorPath = copyAssetToFile("indic_model/preprocessor.ts").absolutePath
+                    preprocessorModule = LiteModuleLoader.load(preprocessorPath)
+                    Log.d(TAG, "Loaded PyTorch preprocessor.ts")
+                }
+                // --- END ADDITION ---
+
                 val encoderFileName = "indic_model/encoder.quant.int8.onnx"
                 Log.d(TAG, "Attempting to load encoder: $encoderFileName")
                 if (encoderSession.isClosedOrNull()) {
@@ -88,15 +98,13 @@ class AsrService(private val context: Context) {
                 if (jointPreNetSession.isClosedOrNull()) {
                     jointPreNetSession = createSessionInternal("indic_model/joint_pre_net.onnx")
                 }
-                // Pre-load a default post-net if desired, or load on demand
-                // getPostNetSessionInternal("gu")
 
-                areRnntModelsLoaded = !areAnyRnntSessionsClosed()
+                areRnntModelsLoaded = !areAnyRnntSessionsClosed() && preprocessorModule != null
                 if (areRnntModelsLoaded) {
-                    Log.i(TAG, "RNN-T models loaded successfully.")
+                    Log.i(TAG, "RNN-T models and Preprocessor loaded successfully.")
                 } else {
-                    Log.e(TAG, "One or more RNN-T models failed to load.")
-                    closeRnntSessions() // Clean up partially loaded models
+                    Log.e(TAG, "One or more RNN-T models or Preprocessor failed to load.")
+                    closeRnntSessions()
                 }
                 return areRnntModelsLoaded
             } catch (e: Exception) {
@@ -111,10 +119,17 @@ class AsrService(private val context: Context) {
     @Synchronized
     private fun ensureCtcModelsLoaded(): Boolean {
         synchronized(loadingLock) {
-            if (isCtcDecoderLoaded && !encoderSession.isClosedOrNull() && !ctcDecoderSession.isClosedOrNull()) { return true }
-            Log.i(TAG, "Starting lazy loading of CTC ONNX models...")
+            if (isCtcDecoderLoaded && !encoderSession.isClosedOrNull() && !ctcDecoderSession.isClosedOrNull() && preprocessorModule != null) { return true }
+            Log.i(TAG, "Starting lazy loading of CTC ONNX models and PyTorch Preprocessor...")
             try {
-                // Reuse encoder if loaded by RNNT, otherwise load it
+                // --- ADDED: Load PyTorch Preprocessor ---
+                if (preprocessorModule == null) {
+                    val preprocessorPath = copyAssetToFile("indic_model/preprocessor.ts").absolutePath
+                    preprocessorModule = LiteModuleLoader.load(preprocessorPath)
+                    Log.d(TAG, "Loaded PyTorch preprocessor.ts")
+                }
+                // --- END ADDITION ---
+
                 val encoderFileName = "indic_model/encoder.quant.int8.onnx" // Assume quantized
                 if (encoderSession.isClosedOrNull()) {
                     encoderSession = createSessionInternal(encoderFileName)
@@ -123,11 +138,11 @@ class AsrService(private val context: Context) {
                     ctcDecoderSession = createSessionInternal("indic_model/ctc_decoder.onnx")
                 }
 
-                isCtcDecoderLoaded = !encoderSession.isClosedOrNull() && !ctcDecoderSession.isClosedOrNull()
+                isCtcDecoderLoaded = !encoderSession.isClosedOrNull() && !ctcDecoderSession.isClosedOrNull() && preprocessorModule != null
                 if (isCtcDecoderLoaded) {
-                    Log.i(TAG, "CTC models loaded successfully.")
+                    Log.i(TAG, "CTC models and Preprocessor loaded successfully.")
                 } else {
-                    Log.e(TAG, "Encoder or CTC Decoder failed to load.")
+                    Log.e(TAG, "Encoder, CTC Decoder, or Preprocessor failed to load.")
                     closeCtcSessions()
                 }
                 return isCtcDecoderLoaded
@@ -157,15 +172,15 @@ class AsrService(private val context: Context) {
         jointPreNetSession?.close(); jointPreNetSession = null
         postNetSessions.values.forEach { it?.close() }
         postNetSessions.clear()
-        // Don't close encoderSession here if CTC might use it
+        // preprocessorModule is shared, don't close here
     }
     // Helper function to close only CTC related sessions
     private fun closeCtcSessions() {
         ctcDecoderSession?.close(); ctcDecoderSession = null
-        // Don't close encoderSession here if RNNT might use it
+        // preprocessorModule is shared, don't close here
     }
 
-    // --- (createSessionInternal, copyAssetToFile, getPostNetSessionInternal, isClosedOrNull - Keep existing implementations) ---
+    // (createSessionInternal, copyAssetToFile, getPostNetSessionInternal, isClosedOrNull - NO CHANGES)
     private fun createSessionInternal(assetPath: String): OrtSession? {
         Log.d(TAG, "Attempting to load model by copying from asset path: $assetPath")
         val modelFile: File? = try { copyAssetToFile(assetPath) } catch (e: Exception) { Log.e(TAG, "Failed to copy asset $assetPath to cache", e); null }
@@ -228,13 +243,12 @@ class AsrService(private val context: Context) {
         return session
     }
     private fun OrtSession?.isClosedOrNull(): Boolean {
-        // An OrtSession is never truly "closed" in the API, it's just released.
-        // Checking for null is the effective way to see if it needs reloading.
         return this == null
     }
 
-    // --- (Audio reading/resampling - Keep existing implementations) ---
-    private fun readAudioFile(filePath: String): FloatArray { /* ... Keep implementation ... */
+
+    // (Audio reading/resampling - NO CHANGES)
+    private fun readAudioFile(filePath: String): FloatArray {
         val extractor = MediaExtractor()
         val audioSamples = mutableListOf<Float>()
         var originalSampleRate = -1
@@ -299,7 +313,7 @@ class AsrService(private val context: Context) {
             return readSamples // Already at target rate
         }
     }
-    private fun resampleLinear(input: FloatArray, inputRate: Int, outputRate: Int): FloatArray { /* ... Keep implementation ... */
+    private fun resampleLinear(input: FloatArray, inputRate: Int, outputRate: Int): FloatArray {
         val inputLength = input.size
         if (inputLength == 0 || inputRate <= 0 || outputRate <= 0) return FloatArray(0)
 
@@ -315,20 +329,18 @@ class AsrService(private val context: Context) {
             val indexCeil = indexFloor + 1                   // Index of the sample after the current position
             val fraction = currentInputIndex - indexFloor    // How far between indexFloor and indexCeil we are
 
-            // Get the values at floor and ceil, handling boundary conditions
-            val valueFloor = input.getOrElse(indexFloor) { 0f } // Use 0f if index is out of bounds
-            val valueCeil = input.getOrElse(indexCeil) { 0f }   // Use 0f if index is out of bounds
+            val valueFloor = input.getOrElse(indexFloor) { 0f }
+            val valueCeil = input.getOrElse(indexCeil) { 0f }
 
-            // Linear interpolation
             output[i] = (valueFloor * (1.0 - fraction) + valueCeil * fraction).toFloat()
 
-            currentInputIndex += step // Move to the next position in the input array
+            currentInputIndex += step
         }
         Log.d(TAG,"Resampling done. Output size: ${output.size}")
         return output
     }
-    // Keep transposeFloatArray, needed for RNNT
-    private fun transposeFloatArray(data: FloatArray, shape: LongArray, permutation: IntArray): Pair<FloatArray, LongArray> { /* ... Keep implementation ... */
+    // (transposeFloatArray - NO CHANGES)
+    private fun transposeFloatArray(data: FloatArray, shape: LongArray, permutation: IntArray): Pair<FloatArray, LongArray> {
         if (shape.size != 3 || permutation.size != 3) {
             throw IllegalArgumentException("Only 3D transpose is supported for this helper.")
         }
@@ -343,7 +355,6 @@ class AsrService(private val context: Context) {
             throw IllegalArgumentException("Data size does not match shape: ${data.size} vs ${shape.contentToString()}")
         }
         if (nd1 * nd2 * nd3 != data.size) {
-            // This should mathematically not happen if permutation is valid
             throw IllegalArgumentException("New shape calculation error.")
         }
 
@@ -351,33 +362,28 @@ class AsrService(private val context: Context) {
         val newData = FloatArray(data.size)
         var newIndex = 0
 
-        // Iterate through the *new* dimensions
         for (i in 0 until nd1) {
             for (j in 0 until nd2) {
                 for (k in 0 until nd3) {
-                    // Map back to original indices
                     val originalIndices = IntArray(3)
-                    originalIndices[p1] = i // Index i in the new dim p1 corresponds to original dim p1
-                    originalIndices[p2] = j // Index j in the new dim p2 corresponds to original dim p2
-                    originalIndices[p3] = k // Index k in the new dim p3 corresponds to original dim p3
-                    val (o1, o2, o3) = originalIndices // Original indices
+                    originalIndices[p1] = i
+                    originalIndices[p2] = j
+                    originalIndices[p3] = k
+                    val (o1, o2, o3) = originalIndices
 
-                    // Calculate the flat index in the original data array
                     val originalIndex = o1 * (d2 * d3) + o2 * d3 + o3
 
                     if (originalIndex >= 0 && originalIndex < data.size) {
                         newData[newIndex++] = data[originalIndex]
                     } else {
-                        // This should ideally not happen with correct logic, but log if it does
                         Log.e(TAG, "Transpose index calculation error: $originalIndex out of bounds (size ${data.size}) for new index ($i, $j, $k)")
-                        newData[newIndex++] = 0f // Or throw exception
+                        newData[newIndex++] = 0f
                     }
                 }
             }
         }
 
         if (newIndex != data.size) {
-            // This indicates a potential logic error in the loops
             Log.w(TAG, "Transpose output size mismatch: expected ${data.size}, got $newIndex. Shape: ${shape.contentToString()}, NewShape: ${newShape.contentToString()}")
         }
 
@@ -385,7 +391,7 @@ class AsrService(private val context: Context) {
     }
 
 
-    // --- runEncoder (Keep existing implementation, ensure Int64 length tensor) ---
+    // --- MODIFIED: runEncoder to use PyTorch preprocessor ---
     private fun runEncoder(filePath: String): Triple<FloatArray, LongArray, LongArray?>? {
         Log.d(TAG, "Starting runEncoder for: $filePath")
         val audioFloats = readAudioFile(filePath)
@@ -394,62 +400,86 @@ class AsrService(private val context: Context) {
             return null
         }
 
-        Log.d(TAG, "Running AudioPreprocessor...")
-        val melSpectrogramFlat = preprocessor.process(audioFloats)
-        val numFrames = if (preprocessor.nMels > 0 && melSpectrogramFlat.isNotEmpty()) melSpectrogramFlat.size / preprocessor.nMels else 0
-        Log.d(TAG,"Preprocessor output size: ${melSpectrogramFlat.size}, NumFrames: $numFrames")
+        Log.d(TAG, "Running PyTorch Preprocessor...")
+        val melSpectrogramFloats: FloatArray
+        val melSpectrogramShape: LongArray
+        val outputNumFrames: Long
 
-        if (numFrames == 0) {
-            Log.e(TAG, "Preprocessing error: 0 frames generated.")
-            return null
-        }
-
-        // Input shape expected by model: [1, Mels, Frames]
-        val shape = longArrayOf(1, preprocessor.nMels.toLong(), numFrames.toLong())
+        var audioTensor: Tensor? = null
+        var pyLengthTensor: Tensor? = null
         var melTensor: OnnxTensor? = null
-        var lengthTensor: OnnxTensor? = null
+        var onnxLengthTensor: OnnxTensor? = null
         var result: Triple<FloatArray, LongArray, LongArray?>? = null
 
         try {
-            melTensor = OnnxTensor.createTensor(ortEnvironment, FloatBuffer.wrap(melSpectrogramFlat), shape)
+            // 1. Prepare PyTorch Preprocessor Inputs
+            // input_signal=audio_tensor
+            audioTensor = Tensor.fromBlob(audioFloats, longArrayOf(1, audioFloats.size.toLong()))
+            // length=audio_length (torch.long)
+            pyLengthTensor = Tensor.fromBlob(longArrayOf(audioFloats.size.toLong()), longArrayOf(1))
 
-            // --- FIX: Ensure length is Int64 (Long) as required by this specific model ---
-            lengthTensor = OnnxTensor.createTensor(ortEnvironment, LongBuffer.wrap(longArrayOf(numFrames.toLong())), longArrayOf(1))
-            Log.d(TAG,"Created tensors - Mel shape: ${shape.contentToString()}, Length shape: [1]")
-            // --- End Fix ---
-
-            Log.d(TAG, "Running encoder model...")
-            val encoderInputs = mapOf(
-                "audio_signal" to melTensor, // Check ONNX model input names (e.g., using Netron)
-                "length" to lengthTensor     // Check ONNX model input names
+            Log.d(TAG,"Running preprocessor.forward()...")
+            // 2. Run PyTorch Preprocessor
+            val preprocessorResult = preprocessorModule!!.forward(
+                IValue.from(audioTensor),
+                IValue.from(pyLengthTensor)
             )
 
+            // 3. Unpack PyTorch Preprocessor Outputs
+            val tuple = preprocessorResult.toTuple()
+            val signalTensor = tuple[0].toTensor()
+            val lengthTensorOut = tuple[1].toTensor()
+
+            melSpectrogramFloats = signalTensor.dataAsFloatArray
+            melSpectrogramShape = signalTensor.shape() // Should be [1, Mels, Frames]
+            val outputNumFramesLong = lengthTensorOut.dataAsLongArray // Should be [Frames]
+            outputNumFrames = outputNumFramesLong[0]
+
+            Log.d(TAG,"Preprocessor output size: ${melSpectrogramFloats.size}, Shape: ${melSpectrogramShape.contentToString()}, NumFrames: $outputNumFrames")
+
+            if (outputNumFrames == 0L || melSpectrogramFloats.isEmpty()) {
+                Log.e(TAG, "Preprocessing error: 0 frames generated.")
+                return null
+            }
+
+            // 4. Prepare ONNX Encoder Inputs (from PyTorch outputs)
+            melTensor = OnnxTensor.createTensor(ortEnvironment, FloatBuffer.wrap(melSpectrogramFloats), melSpectrogramShape)
+            // Python script uses astype(np.int64), so we use LongBuffer
+            onnxLengthTensor = OnnxTensor.createTensor(ortEnvironment, LongBuffer.wrap(outputNumFramesLong), longArrayOf(1))
+
+            Log.d(TAG,"Created ONNX tensors - Mel shape: ${melSpectrogramShape.contentToString()}, Length shape: [1]")
+
+            Log.d(TAG, "Running ONNX encoder model...")
+            val encoderInputs = mapOf(
+                "audio_signal" to melTensor, // This name must match encoder.onnx
+                "length" to onnxLengthTensor     // This name must match encoder.onnx
+            )
+
+            // 5. Run ONNX Encoder
             encoderSession!!.run(encoderInputs).use { results ->
                 Log.d(TAG,"Encoder run successful. Processing results...")
-                // Assuming encoder outputs 'outputs' and 'encoded_lengths'
-                // Check actual output names using Netron or model inspection if needed
                 val outputsTensor = results.get("outputs").get() as OnnxTensor
-                val lengthsTensor = results.get("encoded_lengths").get() as OnnxTensor // Should be Long
+                val lengthsTensor = results.get("encoded_lengths").get() as OnnxTensor
 
                 Log.d(TAG,"Encoder output shapes: Outputs=${outputsTensor.info.shape.contentToString()}, Lengths=${lengthsTensor.info.shape.contentToString()}")
 
-                val outputsArray = outputsTensor.floatBuffer.array() // Get underlying array efficiently
+                val outputsArray = outputsTensor.floatBuffer.array()
                 val outputShape = outputsTensor.info.shape
-
-                // Ensure lengths are read as Long
                 val lengthsBuffer = lengthsTensor.longBuffer
                 val lengthsArray = LongArray(lengthsBuffer.remaining())
                 lengthsBuffer.get(lengthsArray)
 
-
                 result = Triple(outputsArray, outputShape, lengthsArray)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Encoder run failed", e)
-            result = null // Ensure result is null on error
+            Log.e(TAG, "Encoder run (including preprocessing) failed", e)
+            result = null
         } finally {
-            melTensor?.close() // Safely close tensors
-            lengthTensor?.close()
+            // Clean up all tensors
+            audioTensor?.destroy()
+            pyLengthTensor?.destroy()
+            melTensor?.close()
+            onnxLengthTensor?.close()
         }
 
         if (result != null) {
@@ -457,6 +487,7 @@ class AsrService(private val context: Context) {
         }
         return result
     }
+    // --- END MODIFICATION ---
 
 
     /**
@@ -473,21 +504,22 @@ class AsrService(private val context: Context) {
         }
 
         // 1. Run Encoder (Handles preprocessing)
+        // --- THIS FUNCTION IS NOW MODIFIED to use PyTorch preprocessor ---
         val encoderResult = runEncoder(filePath)
         if (encoderResult == null) {
             return "[Encoder Failed]"
         }
+        // --- END MODIFICATION ---
+
         val (encoderOutputs, encoderShape, encodedLengthsLong) = encoderResult
-        // encodedLengthsLong is now correctly LongArray?
         if (encodedLengthsLong == null || encodedLengthsLong.isEmpty()) {
             Log.e(TAG, "Encoder did not return valid output lengths.")
             return "[Encoder Lengths Error]"
         }
-        val encodedLength = encodedLengthsLong[0].toInt() // Use the first (and only) length value
+        val encodedLength = encodedLengthsLong[0].toInt()
         Log.d(TAG, "Encoder output shape: ${encoderShape.contentToString()}, Effective length: $encodedLength")
 
 
-        // --- Intermediate tensors, managed with try-with-resources (.use) ---
         var jointEncInputTensor: OnnxTensor? = null
         var fTensor: OnnxTensor? = null
         var targetTensor: OnnxTensor? = null
@@ -503,7 +535,6 @@ class AsrService(private val context: Context) {
         try {
             // 2. Prepare for Joint Encoder
             Log.d(TAG, "Preparing for Joint Encoder...")
-            // Transpose encoder output: [1, Features, Time] -> [1, Time, Features]
             val (encoderTransposedData, encoderTransposedShape) = transposeFloatArray(
                 encoderOutputs, encoderShape, intArrayOf(0, 2, 1) // Permutation: Batch, Time, Features
             )
@@ -513,7 +544,7 @@ class AsrService(private val context: Context) {
 
             // 3. Run Joint Encoder (joint_enc.onnx) -> Produces 'f_base'
             Log.d(TAG, "Running Joint Encoder...")
-            val f_base: FloatArray // Shape [1, Time, joint_hidden_dim (e.g., 640)]
+            val f_base: FloatArray
             jointEncSession!!.run(Collections.singletonMap("input", jointEncInputTensor)).use { results ->
                 (results[0] as OnnxTensor).use { outputTensor ->
                     Log.d(TAG, "Joint Encoder output shape: ${outputTensor.info.shape.contentToString()}")
@@ -522,27 +553,26 @@ class AsrService(private val context: Context) {
                     buffer.get(f_base)
                 }
             }
-            jointEncInputTensor.close(); jointEncInputTensor = null // Close immediately after use
+            jointEncInputTensor.close(); jointEncInputTensor = null
 
             val jointHiddenDim = if (encoderTransposedShape[1] > 0) f_base.size / encoderTransposedShape[1].toInt() else 0
             if(jointHiddenDim != predRnnHiddenDim) {
                 Log.w(TAG,"Potential mismatch: Joint Encoder output dim ($jointHiddenDim) != PRED_RNN_HIDDEN_DIM ($predRnnHiddenDim)")
-                // Adjust predRnnHiddenDim if necessary, though they should match
             }
             Log.d(TAG,"Joint Encoder output processed. Shape [1, ${encoderTransposedShape[1]}, $jointHiddenDim]")
 
 
             // 4. RNNT Decode Loop Initialization
             Log.d(TAG, "Initializing RNNT decode loop state...")
-            val hypothesis = mutableListOf(vocab.sosId) // Start with SOS ID
-            var hState = FloatArray(predRnnLayers * 1 * predRnnHiddenDim) { 0f } // Match Python init
-            var cState = FloatArray(predRnnLayers * 1 * predRnnHiddenDim) { 0f } // Match Python init
-            val stateShape = longArrayOf(predRnnLayers.toLong(), 1, predRnnHiddenDim.toLong()) // Shape for state tensors
+            // --- Use updated vocab.sosId ---
+            val hypothesis = mutableListOf(vocab.sosId)
+            var hState = FloatArray(predRnnLayers * 1 * predRnnHiddenDim) { 0f }
+            var cState = FloatArray(predRnnLayers * 1 * predRnnHiddenDim) { 0f }
+            val stateShape = longArrayOf(predRnnLayers.toLong(), 1, predRnnHiddenDim.toLong())
 
-            val fFrame = FloatArray(predRnnHiddenDim) // Buffer for current 'f' frame
+            val fFrame = FloatArray(predRnnHiddenDim)
             val actualFramesInFBase = if (predRnnHiddenDim > 0) f_base.size / predRnnHiddenDim else 0
 
-            // Use the length reported by the encoder, capped by the actual f_base size
             val loopLimit = min(encodedLength, actualFramesInFBase)
             if (encodedLength > actualFramesInFBase) {
                 Log.w(TAG, "Encoder reported length ($encodedLength) > actual frames in f_base ($actualFramesInFBase). Using $actualFramesInFBase.")
@@ -554,14 +584,12 @@ class AsrService(private val context: Context) {
 
             // 5. Main Decoding Loop (Outer loop over time 't')
             for (t in 0 until loopLimit) {
-                // Get the current frame 'f' from the joint encoder output
                 try {
                     System.arraycopy(f_base, t * predRnnHiddenDim, fFrame, 0, predRnnHiddenDim)
                 } catch (e: Exception) {
                     Log.e(TAG, "Error copying f_base frame at t=$t", e)
                     return "[Error: Array copy failed in decode loop]"
                 }
-                // fTensor shape [1, 1, predRnnHiddenDim]
                 fTensor = OnnxTensor.createTensor(ortEnvironment, FloatBuffer.wrap(fFrame), longArrayOf(1, 1, predRnnHiddenDim.toLong()))
 
                 var symbolsAdded = 0
@@ -570,38 +598,29 @@ class AsrService(private val context: Context) {
                 // Inner loop (while predicted token is not blank)
                 while (notBlank && symbolsAdded < rnntMaxSymbolsPerStep) {
                     try {
-                        // --- Prepare Inputs for RNNT Decoder ---
                         val lastTokenInt = hypothesis.last()
-                        // targets: [1, 1], value = last token ID
                         targetTensor = OnnxTensor.createTensor(ortEnvironment, IntBuffer.wrap(intArrayOf(lastTokenInt)), longArrayOf(1, 1))
-                        // target_length: [1], value = 1
                         targetLengthTensor = OnnxTensor.createTensor(ortEnvironment, IntBuffer.wrap(intArrayOf(1)), longArrayOf(1))
-                        // states: [num_layers, 1, hidden_dim]
                         hTensor = OnnxTensor.createTensor(ortEnvironment, FloatBuffer.wrap(hState), stateShape)
                         cTensor = OnnxTensor.createTensor(ortEnvironment, FloatBuffer.wrap(cState), stateShape)
 
-                        // Input names must match the rnnt_decoder.onnx model
-                        // Use Netron to verify names like "states.1", "onnx::Slice_3"
                         val decoderInputs = mapOf(
                             "targets" to targetTensor,
                             "target_length" to targetLengthTensor,
-                            "states.1" to hTensor, // Verify this name
-                            "onnx::Slice_3" to cTensor // Verify this name
+                            "states.1" to hTensor,
+                            "onnx::Slice_3" to cTensor
                         )
 
-                        // --- Run RNNT Decoder ---
                         Log.v(TAG, "t=$t, symbol=$symbolsAdded: Running RNNT Decoder...")
                         val newH: FloatArray
                         val newC: FloatArray
-                        val gOutputData: FloatArray // Shape [1, predRnnHiddenDim, 1] ? Check Netron/Python output
-                        val gOutputShape: LongArray // Get shape from output tensor
+                        val gOutputData: FloatArray
+                        val gOutputShape: LongArray
 
                         rnntDecoderSession!!.run(decoderInputs).use { decoderResults ->
-                            // Output names must match rnnt_decoder.onnx
-                            // Verify indices/names: 0='outputs', 2='states', 3='162' ?
-                            val gOutTensor = decoderResults.get("outputs").get() as OnnxTensor // Verify name
-                            val hOutTensor = decoderResults.get("states").get() as OnnxTensor // Verify name
-                            val cOutTensor = decoderResults.get("162").get() as OnnxTensor // Verify name
+                            val gOutTensor = decoderResults.get("outputs").get() as OnnxTensor
+                            val hOutTensor = decoderResults.get("states").get() as OnnxTensor
+                            val cOutTensor = decoderResults.get("162").get() as OnnxTensor
 
                             Log.v(TAG, "   Decoder shapes: g=${gOutTensor.info.shape.contentToString()}, h=${hOutTensor.info.shape.contentToString()}, c=${cOutTensor.info.shape.contentToString()}")
 
@@ -613,13 +632,11 @@ class AsrService(private val context: Context) {
                             gBuffer.get(gOutputData)
                         } // decoderResults closed
 
-                        // --- Run Joint Prediction Network ---
-                        // Transpose gOutput: Python uses (0, 2, 1) -> [1, 1, predRnnHiddenDim]
                         Log.v(TAG, "   Running Joint Prediction...")
                         val (gTransposedData, gTransposedShape) = transposeFloatArray(gOutputData, gOutputShape, intArrayOf(0, 2, 1))
                         gPredInputTensor = OnnxTensor.createTensor(ortEnvironment, FloatBuffer.wrap(gTransposedData), gTransposedShape)
 
-                        val gFloats: FloatArray // Shape [1, 1, predRnnHiddenDim]
+                        val gFloats: FloatArray
                         jointPredSession!!.run(Collections.singletonMap("input", gPredInputTensor)).use { gResults ->
                             (gResults[0] as OnnxTensor).use { gTemp ->
                                 Log.v(TAG, "   Joint Pred output shape: ${gTemp.info.shape.contentToString()}")
@@ -627,19 +644,16 @@ class AsrService(private val context: Context) {
                                 gFloats = FloatArray(gBuffer.remaining())
                                 gBuffer.get(gFloats)
                             }
-                        } // gResults closed
+                        }
                         gPredInputTensor.close(); gPredInputTensor = null
 
-                        // --- Combine f and g ---
                         if (fFrame.size != gFloats.size) {
                             Log.e(TAG,"Shape mismatch before combine: fFrame=${fFrame.size}, gFloats=${gFloats.size}")
                             return "[Error: F/G shape mismatch]"
                         }
                         val combinedData = FloatArray(predRnnHiddenDim) { i -> fFrame[i] + gFloats[i] }
-                        // Shape [1, 1, predRnnHiddenDim]
                         combinedTensor = OnnxTensor.createTensor(ortEnvironment, FloatBuffer.wrap(combinedData), longArrayOf(1, 1, predRnnHiddenDim.toLong()))
 
-                        // --- Run Joint Pre-Net ---
                         Log.v(TAG, "   Running Joint PreNet...")
                         val preNetOutData: FloatArray
                         val preNetOutShape: LongArray
@@ -651,11 +665,10 @@ class AsrService(private val context: Context) {
                                 preNetOutData = FloatArray(preNetBuffer.remaining())
                                 preNetBuffer.get(preNetOutData)
                             }
-                        } // preNetResults closed
+                        }
                         combinedTensor.close(); combinedTensor = null
                         preNetInputTensor = OnnxTensor.createTensor(ortEnvironment,FloatBuffer.wrap(preNetOutData),preNetOutShape)
 
-                        // --- Run Joint Post-Net (Language Specific) ---
                         Log.v(TAG, "   Running Joint PostNet ($language)...")
                         val logitsData: FloatArray
                         val logitsShape: LongArray
@@ -668,78 +681,69 @@ class AsrService(private val context: Context) {
                                 logitsData = FloatArray(logitsBuffer.remaining())
                                 logitsBuffer.get(logitsData)
                             }
-                        } // logitsResults closed
+                        }
                         preNetOutputTensorForPostNet.close(); preNetOutputTensorForPostNet = null
 
 
-                        // --- Log Softmax and Argmax (Simulate torch operations) ---
                         val (predToken, maxLogProb) = logSoftmaxArgmax(logitsData)
-
+                        // --- Use updated vocab.blankId ---
                         Log.d(TAG, "   t=$t, symbol=$symbolsAdded -> pred_token=$predToken (blank=${predToken == vocab.blankId}), max_logProb=%.4f".format(maxLogProb))
 
-                        // --- Update Hypothesis and State ---
                         if (predToken == vocab.blankId) {
-                            notBlank = false // Exit inner loop for this timestep 't'
+                            notBlank = false
                         } else {
                             hypothesis.add(predToken)
-                            hState = newH // Update state only if not blank
+                            hState = newH
                             cState = newC
                         }
                         symbolsAdded++
 
                     } finally {
-                        // Ensure all intermediate tensors created in the inner loop are closed
                         targetTensor?.close(); targetTensor = null
                         targetLengthTensor?.close(); targetLengthTensor = null
                         hTensor?.close(); hTensor = null
                         cTensor?.close(); cTensor = null
-                        gPredInputTensor?.close(); gPredInputTensor = null // Ensure closed if error occurred before end of try
+                        gPredInputTensor?.close(); gPredInputTensor = null
                         combinedTensor?.close(); combinedTensor = null
                         preNetOutputTensorForPostNet?.close(); preNetOutputTensorForPostNet = null
-
                     }
-                } // End inner while loop (symbols_added)
-                fTensor?.close(); fTensor = null // Close fTensor after inner loop completes for timestep 't'
+                } // End inner while
+                fTensor?.close(); fTensor = null
 
-            } // End outer for loop (timesteps 't')
+            } // End outer for
 
             Log.d(TAG, "RNN-T decoding finished.")
-            return vocab.decode(hypothesis, language) // Use corrected vocab decode
+            // --- Use updated vocab.decode ---
+            return vocab.decode(hypothesis, language)
 
         } catch (e: Exception) {
             Log.e(TAG, "Error during RNNT transcription", e)
             return "[RNNT Transcription Error: ${e.message}]"
         } finally {
-            // Ensure all tensors potentially created outside the inner loop are closed
             jointEncInputTensor?.close()
-            fTensor?.close() // Might still be open if loop exited early
+            fTensor?.close()
         }
     }
 
 
-    /**
-     * Performs LogSoftmax and Argmax, similar to torch operations.
-     * log_probs = torch.from_numpy(logits.astype(np.float32)).log_softmax(dim=-1)
-     * pred_token = log_probs.argmax(dim=-1).item()
-     */
+    // (logSoftmaxArgmax - NO CHANGES)
     private fun logSoftmaxArgmax(logits: FloatArray): Pair<Int, Float> {
         if (logits.isEmpty()) {
-            return Pair(-1, -Float.MAX_VALUE) // Error case
+            return Pair(-1, -Float.MAX_VALUE)
         }
 
-        // Stabilize by subtracting max logit (log-sum-exp trick)
         val maxLogit = logits.maxOrNull() ?: 0.0f
         var sumExp = 0.0f
         for (logit in logits) {
             sumExp += exp(logit - maxLogit)
         }
-        val logSumExp = ln(sumExp) + maxLogit // Add max back
+        val logSumExp = ln(sumExp) + maxLogit
 
         var predToken = 0
         var maxLogProb = -Float.MAX_VALUE
 
         for (i in logits.indices) {
-            val logProb = logits[i] - logSumExp // Calculate log probability
+            val logProb = logits[i] - logSumExp
             if (logProb > maxLogProb) {
                 maxLogProb = logProb
                 predToken = i
@@ -749,59 +753,61 @@ class AsrService(private val context: Context) {
     }
 
 
-    // --- (transcribeCtc - Keep existing implementation) ---
-    suspend fun transcribeCtc(filePath: String, language: String): String { /* ... Keep implementation ... */
+    // --- MODIFIED: transcribeCtc to use language masks ---
+    suspend fun transcribeCtc(filePath: String, language: String): String {
         if (!ensureCtcModelsLoaded()) return "[Error: CTC Models could not be loaded]"
 
-        // 1. Run Encoder (which now uses the correct preprocessor and returns Long length)
+        // 1. Run Encoder (which now uses the PyTorch preprocessor)
         val encoderResult = runEncoder(filePath) ?: return "[Encoder Failed]"
         val (encoderOutputs, encoderShape, encodedLengthsLong) = encoderResult
         if (encodedLengthsLong == null || encodedLengthsLong.isEmpty()) {
             Log.e(TAG, "Encoder did not return valid output lengths for CTC.")
             return "[Encoder Lengths Error]"
         }
-        val encodedLength = encodedLengthsLong[0].toInt() // Use the length
+        val encodedLength = encodedLengthsLong[0].toInt()
+
+        // --- NEW: Get Language Mask ---
+        val maskIndices = vocab.getMaskFor(language)
+        if (maskIndices == null) {
+            Log.e(TAG, "CTC Error: No language_mask found for '$language'")
+            return "[Error: No language mask for '$language']"
+        }
+        val langVocabSize = maskIndices.size
+        Log.d(TAG, "Loaded language mask for '$language' with $langVocabSize tokens.")
+        // --- END NEW ---
 
         // 2. Run CTC Decoder
-        val vocabList = vocab.getVocabFor(language) ?: return "[Error: No vocab for '$language']"
-
-        // Feed encoder output into CTC Decoder model
-        // Input shape should match encoder output shape: [1, Features, Time]
         if (encoderShape.size != 3 || encoderShape[0] != 1L) {
             Log.e(TAG,"Unexpected encoder output shape for CTC Decoder: ${encoderShape.contentToString()}")
             return "[Error: Unexpected encoder shape]"
         }
         val ctcDecoderInputTensor = OnnxTensor.createTensor(ortEnvironment, FloatBuffer.wrap(encoderOutputs), encoderShape)
         Log.d(TAG, "Running CTC Decoder model...")
-        val logits: FloatArray
+        val globalLogits: FloatArray // Full logits: [1, Time, GlobalVocabSize]
         val timeSteps: Int
-        val modelVocabSize: Int // Get vocab size from model output, not vocab.json
+        val globalVocabSize: Int
 
         try {
-            // Input name should be "encoder_output" or similar, check your ctc_decoder.onnx
             ctcDecoderSession!!.run(Collections.singletonMap("encoder_output", ctcDecoderInputTensor)).use { results ->
                 (results[0] as OnnxTensor).use { logitsTensor ->
                     val logitsShape = logitsTensor.info.shape
-                    Log.d(TAG,"CTC Decoder output shape: ${logitsShape.contentToString()}")
+                    Log.d(TAG,"CTC Decoder global logits shape: ${logitsShape.contentToString()}")
 
-                    // Expected shape [1, Time, VocabSize]
                     if (logitsShape.size != 3 || logitsShape[0] != 1L) {
                         Log.e(TAG,"CTC Decoder output shape has wrong dimensions: ${logitsShape.contentToString()}")
                         return "[Error: CTC Decoder output dimension mismatch]"
                     }
 
                     timeSteps = logitsShape[1].toInt()
-                    modelVocabSize = logitsShape[2].toInt() // Size from the model output itself
+                    globalVocabSize = logitsShape[2].toInt()
 
-                    // Verify timeSteps match encodedLength from encoder
                     if(timeSteps != encodedLength) {
                         Log.w(TAG,"CTC time steps ($timeSteps) != encoder length ($encodedLength). Using $timeSteps.")
-                        // This might indicate a model mismatch or preprocessing issue if significantly different
                     }
 
                     val logitsBuffer = logitsTensor.floatBuffer
-                    logits = FloatArray(logitsBuffer.remaining())
-                    logitsBuffer.get(logits)
+                    globalLogits = FloatArray(logitsBuffer.remaining())
+                    logitsBuffer.get(globalLogits)
                 }
             }
         } catch (e: Exception) {
@@ -811,43 +817,59 @@ class AsrService(private val context: Context) {
             ctcDecoderInputTensor.close()
         }
 
-        // 3. CTC Greedy Decode
-        Log.d(TAG, "Running CTC Greedy Decode on logits (T=$timeSteps, ModelV=$modelVocabSize)...")
-        val decodedIds = (0 until timeSteps).map { t ->
-            val offset = t * modelVocabSize
-            var maxIdx = 0
-            var maxVal = -Float.MAX_VALUE
-            for (v in 0 until modelVocabSize) {
-                val currentLogit = logits.getOrElse(offset + v) { -Float.MAX_VALUE } // Safe indexing
-                if (currentLogit > maxVal) {
-                    maxVal = currentLogit
-                    maxIdx = v
+        // 3. --- NEW: Greedy Decode using MASK ---
+        // This replicates `pred_indices = np.argmax(lang_specific_logits, axis=-1)[0]`
+        Log.d(TAG, "Running CTC Greedy Decode with language mask (T=$timeSteps, V_global=$globalVocabSize, V_lang=$langVocabSize)...")
+        val decodedMaskIndices = IntArray(timeSteps) // This will hold indices *into the mask*
+
+        for (t in 0 until timeSteps) {
+            val offset = t * globalVocabSize
+            var bestMaskIndex = 0 // Index *of the mask* (0 to langVocabSize-1)
+            var maxLogit = -Float.MAX_VALUE
+
+            // Iterate only over the indices specified in the mask
+            for (maskIndex in maskIndices.indices) { // 0 to langVocabSize-1
+                val globalIndex = maskIndices[maskIndex] // Get the index into the global logits
+                if (globalIndex < 0 || globalIndex >= globalVocabSize) {
+                    Log.e(TAG, "Mask index $globalIndex out of bounds for global vocab size $globalVocabSize")
+                    continue
+                }
+                val logit = globalLogits[offset + globalIndex]
+                if (logit > maxLogit) {
+                    maxLogit = logit
+                    bestMaskIndex = maskIndex // Store the index *of the mask*
                 }
             }
-            maxIdx
+            decodedMaskIndices[t] = bestMaskIndex
         }
 
-        // 4. Merge repeats and remove blanks (using vocab.blankId)
-        val mergedIds = mutableListOf<Int>()
-        var lastId = -1 // Use a value guaranteed not to be a valid ID
-        decodedIds.forEach { id ->
-            // Check against vocab.blankId (which should be 0 now for ai4bharat)
+        // 4. Merge repeats
+        val mergedIndices = mutableListOf<Int>()
+        var lastId = -1
+        decodedMaskIndices.forEach { id ->
             if (id != lastId) {
-                if (id != vocab.blankId) { // Also remove blank tokens here after merging repeats
-                    mergedIds.add(id)
-                }
+                mergedIndices.add(id)
                 lastId = id
             }
         }
 
-        // 5. Decode with IndicVocab (using language-specific subset)
-        return vocab.decode(mergedIds, language) // Uses blankId=0, sosId=1 etc.
+        // 5. Remove blank (using vocab.blankId, which is 256)
+        // This filters based on the *mask index*
+        val finalIds = mergedIndices.filter { it != vocab.blankId }
+        // --- END MODIFICATION ---
+
+        // 6. Decode with IndicVocab (using language-specific subset)
+        // vocab.decode() expects indices into the language-specific vocab, which is exactly
+        // what finalIds now contains (they are indices from 0..langVocabSize-1)
+        return vocab.decode(finalIds, language)
     }
+
 
     // --- (close - Close all sessions) ---
     fun close() {
         Log.d(TAG, "Closing ASRService models...")
         synchronized(loadingLock) {
+            try { preprocessorModule?.destroy() } catch (e: Exception) { Log.e(TAG, "Error closing preprocessorModule", e)}
             try { encoderSession?.close() } catch (e: Exception) { Log.e(TAG, "Error closing encoderSession", e)}
             try { rnntDecoderSession?.close() } catch (e: Exception) { Log.e(TAG, "Error closing rnntDecoderSession", e)}
             try { jointEncSession?.close() } catch (e: Exception) { Log.e(TAG, "Error closing jointEncSession", e)}
@@ -859,6 +881,7 @@ class AsrService(private val context: Context) {
             }
             postNetSessions.clear()
 
+            preprocessorModule = null // --- ADDED ---
             encoderSession = null
             rnntDecoderSession = null
             jointEncSession = null
@@ -872,3 +895,5 @@ class AsrService(private val context: Context) {
         Log.d(TAG, "ASRService models closed.")
     }
 }
+
+
