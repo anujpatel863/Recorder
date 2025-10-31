@@ -88,5 +88,6 @@ dependencies {
 
     implementation("com.github.wendykierp:JTransforms:3.1")
 
-
+    implementation("org.pytorch:pytorch_android:2.1.0")
+    implementation("org.pytorch:pytorch_android_torchvision:2.1.0")
 }
