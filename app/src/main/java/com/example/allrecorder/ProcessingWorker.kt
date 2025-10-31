@@ -525,9 +525,7 @@ class ProcessingWorker(
     }
 
     private fun selectAudioTrack(extractor: MediaExtractor): Int {
-        for (i in 0 until extractor.trackCount) {
-            if (extractor.getTrackFormat(i).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true) return i
-        }
+        Log.w(TAG, "selectAudioTrack is deprecated.")
         return -1
     }
 

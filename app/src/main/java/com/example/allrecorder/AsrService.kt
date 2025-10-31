@@ -9,10 +9,10 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import ai.onnxruntime.OrtSession.SessionOptions
 import org.pytorch.IValue
-import org.pytorch.LiteModuleLoader
 import org.pytorch.Module
 import org.pytorch.Tensor
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -69,13 +69,13 @@ class AsrService(private val context: Context) {
     @Synchronized
     private fun ensureRnntModelsLoaded(): Boolean {
         synchronized(loadingLock) {
-            if (areRnntModelsLoaded && !areAnyRnntSessionsClosed()) return true
+            if (areRnntModelsLoaded && !areAnyRnntSessionsClosed() && preprocessorModule != null) return true
             Log.i(TAG, "Starting lazy loading of RNN-T ONNX models and PyTorch Preprocessor...")
             try {
                 // --- ADDED: Load PyTorch Preprocessor ---
                 if (preprocessorModule == null) {
                     val preprocessorPath = copyAssetToFile("indic_model/preprocessor.ts").absolutePath
-                    preprocessorModule = LiteModuleLoader.load(preprocessorPath)
+                    preprocessorModule = Module.load(preprocessorPath)
                     Log.d(TAG, "Loaded PyTorch preprocessor.ts")
                 }
                 // --- END ADDITION ---
@@ -125,7 +125,7 @@ class AsrService(private val context: Context) {
                 // --- ADDED: Load PyTorch Preprocessor ---
                 if (preprocessorModule == null) {
                     val preprocessorPath = copyAssetToFile("indic_model/preprocessor.ts").absolutePath
-                    preprocessorModule = LiteModuleLoader.load(preprocessorPath)
+                    preprocessorModule = Module.load(preprocessorPath)
                     Log.d(TAG, "Loaded PyTorch preprocessor.ts")
                 }
                 // --- END ADDITION ---
@@ -249,95 +249,54 @@ class AsrService(private val context: Context) {
 
     // (Audio reading/resampling - NO CHANGES)
     private fun readAudioFile(filePath: String): FloatArray {
-        val extractor = MediaExtractor()
-        val audioSamples = mutableListOf<Float>()
-        var originalSampleRate = -1
+        val file = File(filePath)
+        if (!file.exists()) {
+            Log.e(TAG, "Audio file not found: $filePath")
+            return FloatArray(0)
+        }
 
         try {
-            extractor.setDataSource(filePath)
-            val trackIndex = (0 until extractor.trackCount).firstOrNull {
-                extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
-            } ?: -1
-
-            if (trackIndex == -1) {
-                Log.e(TAG, "No audio track found in $filePath")
-                return FloatArray(0)
-            }
-            extractor.selectTrack(trackIndex)
-
-            val format = extractor.getTrackFormat(trackIndex)
-            originalSampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-            val channelCount = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-            Log.d(TAG, "Reading audio: $filePath, Rate: $originalSampleRate, Channels: $channelCount")
-
-
-            val buffer = ByteBuffer.allocate(1024 * 16).order(ByteOrder.nativeOrder()) // Larger buffer
-            while (true) {
-                val sampleSize = extractor.readSampleData(buffer, 0)
-                if (sampleSize <= 0) break
-                buffer.rewind()
-                // Handle stereo: average channels to mono
-                if (channelCount == 2) {
-                    while (buffer.remaining() >= 4) { // 2 channels * 2 bytes/short
-                        val left = buffer.short.toFloat() / 32768.0f
-                        val right = buffer.short.toFloat() / 32768.0f
-                        audioSamples.add((left + right) / 2.0f) // Average channels
-                    }
-                } else { // Mono or other (treat as mono)
-                    while (buffer.remaining() >= 2) {
-                        audioSamples.add(buffer.short.toFloat() / 32768.0f) // Normalize
-                    }
+            FileInputStream(file).use { fileStream ->
+                // Read the WAV header (44 bytes) and discard it
+                val header = ByteArray(44)
+                val readHeader = fileStream.read(header, 0, 44)
+                if (readHeader < 44) {
+                    Log.e(TAG, "Failed to read WAV header. File is too small.")
+                    return FloatArray(0)
                 }
-                buffer.clear()
-                extractor.advance()
+
+                // Read the rest of the file (PCM data)
+                val dataBytes = fileStream.readBytes()
+                if (dataBytes.isEmpty()) {
+                    Log.e(TAG, "WAV file contains no PCM data.")
+                    return FloatArray(0)
+                }
+
+                // Wrap the byte array in a ByteBuffer to read 16-bit (2-byte) shorts
+                val buffer = ByteBuffer.wrap(dataBytes).order(ByteOrder.LITTLE_ENDIAN)
+                val numSamples = dataBytes.size / 2
+                val floatArray = FloatArray(numSamples)
+
+                for (i in 0 until numSamples) {
+                    // Get the 16-bit short sample and normalize it to [-1.0, 1.0]
+                    floatArray[i] = buffer.short.toFloat() / 32768.0f
+                }
+
+                Log.d(TAG, "Read ${floatArray.size} samples from WAV file.")
+                return floatArray
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to read audio file: $filePath", e)
+            Log.e(TAG, "Failed to read WAV file: $filePath", e)
             return FloatArray(0)
-        } finally {
-            extractor.release()
-        }
-
-        val readSamples = audioSamples.toFloatArray()
-        Log.d(TAG,"Read ${readSamples.size} samples.")
-
-        // Resample if necessary
-        if (originalSampleRate != TARGET_SAMPLE_RATE && originalSampleRate > 0) {
-            Log.d(TAG, "Resampling audio from $originalSampleRate Hz to $TARGET_SAMPLE_RATE Hz")
-            return resampleLinear(readSamples, originalSampleRate, TARGET_SAMPLE_RATE)
-        } else if (originalSampleRate <= 0) {
-            Log.e(TAG, "Could not determine original sample rate.")
-            return FloatArray(0) // Return empty on error
-        } else {
-            Log.d(TAG, "Audio already at target sample rate ($TARGET_SAMPLE_RATE Hz).")
-            return readSamples // Already at target rate
         }
     }
+
+    // We no longer need this, but we'll keep it to prevent compile errors
+    // in case it's referenced elsewhere.
     private fun resampleLinear(input: FloatArray, inputRate: Int, outputRate: Int): FloatArray {
-        val inputLength = input.size
-        if (inputLength == 0 || inputRate <= 0 || outputRate <= 0) return FloatArray(0)
-
-        val outputLength = (inputLength.toLong() * outputRate / inputRate).toInt()
-        if (outputLength <= 0) return FloatArray(0)
-
-        val output = FloatArray(outputLength)
-        val step = inputRate.toDouble() / outputRate.toDouble() // Ratio of input samples per output sample
-        var currentInputIndex = 0.0 // Position in the input array (can be fractional)
-
-        for (i in 0 until outputLength) {
-            val indexFloor = floor(currentInputIndex).toInt() // Index of the sample before the current position
-            val indexCeil = indexFloor + 1                   // Index of the sample after the current position
-            val fraction = currentInputIndex - indexFloor    // How far between indexFloor and indexCeil we are
-
-            val valueFloor = input.getOrElse(indexFloor) { 0f }
-            val valueCeil = input.getOrElse(indexCeil) { 0f }
-
-            output[i] = (valueFloor * (1.0 - fraction) + valueCeil * fraction).toFloat()
-
-            currentInputIndex += step
-        }
-        Log.d(TAG,"Resampling done. Output size: ${output.size}")
-        return output
+        Log.w(TAG, "resampleLinear called, but audio should already be 16kHz.")
+        if (inputRate == outputRate) return input
+        return input // Just return the original array
     }
     // (transposeFloatArray - NO CHANGES)
     private fun transposeFloatArray(data: FloatArray, shape: LongArray, permutation: IntArray): Pair<FloatArray, LongArray> {
@@ -476,8 +435,8 @@ class AsrService(private val context: Context) {
             result = null
         } finally {
             // Clean up all tensors
-            audioTensor?.destroy()
-            pyLengthTensor?.destroy()
+//            audioTensor?.destroy()
+//            pyLengthTensor?.destroy()
             melTensor?.close()
             onnxLengthTensor?.close()
         }
@@ -895,5 +854,3 @@ class AsrService(private val context: Context) {
         Log.d(TAG, "ASRService models closed.")
     }
 }
-
-

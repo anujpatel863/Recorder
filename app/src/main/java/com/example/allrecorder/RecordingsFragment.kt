@@ -208,7 +208,7 @@ class RecordingsFragment : Fragment() {
                 if (newName.isNotEmpty()) {
                     lifecycleScope.launch {
                         val oldFile = File(recording.filePath)
-                        val newFile = File(oldFile.parent, "$newName.mp3")
+                        val newFile = File(oldFile.parent, "$newName.wav")
                         if (oldFile.renameTo(newFile)) {
                             recording.filePath = newFile.absolutePath
                             recordingDao.update(recording)
