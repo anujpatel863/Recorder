@@ -1,5 +1,6 @@
 package com.example.allrecorder
 
+import android.text.TextUtils // <-- ADD THIS IMPORT
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -83,9 +84,8 @@ class RecordingAdapter(
             val position = bindingAdapterPosition
             val isExpanded = position == expandedPosition
 
-            // Toggle visibility of the player and transcript
+            // Toggle visibility of the player
             playerControlsLayout.visibility = if (isExpanded) View.VISIBLE else View.GONE
-            transcriptTextView.visibility = if (isExpanded) View.VISIBLE else View.GONE
 
             // Bind common data
             fileNameTextView.text = File(recording.filePath).name
@@ -95,6 +95,17 @@ class RecordingAdapter(
             } else {
                 "Awaiting processing..."
             }
+
+            // --- START OF MODIFICATION ---
+            // Toggle maxLines for transcription based on expansion
+            if (isExpanded) {
+                transcriptTextView.maxLines = Integer.MAX_VALUE
+                transcriptTextView.ellipsize = null
+            } else {
+                transcriptTextView.maxLines = 3
+                transcriptTextView.ellipsize = TextUtils.TruncateAt.END
+            }
+            // --- END OF MODIFICATION ---
 
             // Bind data and set listeners only for the expanded view
             if (isExpanded) {

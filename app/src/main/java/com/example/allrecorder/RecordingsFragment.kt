@@ -17,7 +17,9 @@ import com.example.allrecorder.databinding.FragmentRecordingsBinding
 import kotlinx.coroutines.launch
 import java.io.File
 import android.util.Log
+import android.widget.Toast
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.math.log
 
 class RecordingsFragment : Fragment() {
@@ -249,6 +251,7 @@ class RecordingsFragment : Fragment() {
         }
     }
     private fun transcribeRecording(recording: Recording) {
+        Toast.makeText(requireContext(), "Starting transcription... this may take a while.", Toast.LENGTH_SHORT).show()
         viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
             val language = SettingsManager.asrLanguage
             val decoder = SettingsManager.asrDecoder
@@ -271,7 +274,9 @@ class RecordingsFragment : Fragment() {
             recording.transcript = transcript
             recording.isProcessed = true // Mark as processed
             recordingDao.update(recording)
-
+            withContext(Dispatchers.Main) {
+                Toast.makeText(requireContext(), "Transcription complete!", Toast.LENGTH_SHORT).show()
+            }
             // UI will update automatically via LiveData
         }
     }

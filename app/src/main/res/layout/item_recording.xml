@@ -53,7 +53,7 @@
         android:layout_marginTop="8dp"
         android:ellipsize="end"
         android:maxLines="3"
-        android:visibility="gone"
+        android:visibility="visible"
         tools:visibility="visible"
         tools:text="Speaker 1: Hello, this is a test transcript..." />
 

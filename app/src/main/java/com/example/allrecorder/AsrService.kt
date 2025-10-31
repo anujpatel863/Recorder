@@ -1,8 +1,6 @@
 package com.example.allrecorder
 
 import android.content.Context
-import android.media.MediaExtractor
-import android.media.MediaFormat
 import android.util.Log
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
@@ -24,16 +22,13 @@ import kotlin.math.floor
 import kotlin.math.ln
 import kotlin.math.min
 import kotlin.math.exp
-import kotlin.math.max // Needed for log_softmax stability
+import kotlin.math.max
 
 class AsrService(private val context: Context) {
 
     private val ortEnvironment: OrtEnvironment = OrtEnvironment.getEnvironment()
-    // --- MODIFIED: Removed AudioPreprocessor, added PyTorch Module ---
-    // val preprocessor: AudioPreprocessor // No longer needed
     private var preprocessorModule: Module? = null // For preprocessor.ts
     val vocab: IndicVocab
-    // --- END MODIFICATION ---
 
     // --- Model Sessions ---
     private var encoderSession: OrtSession? = null
@@ -55,13 +50,21 @@ class AsrService(private val context: Context) {
     private val predRnnHiddenDim = 640
     private val TARGET_SAMPLE_RATE = 16000
 
+    // --- START OF CHUNKING CONSTANTS ---
+    // Process 15 seconds of *new* audio at a time
+    private val MAIN_CHUNK_DURATION_IN_SECONDS = 15
+    private val MAIN_CHUNK_IN_SAMPLES = TARGET_SAMPLE_RATE * MAIN_CHUNK_DURATION_IN_SECONDS
+
+    // Add 2 seconds of *previous* audio as context
+    private val CHUNK_OVERLAP_IN_SECONDS = 2
+    private val CHUNK_OVERLAP_IN_SAMPLES = TARGET_SAMPLE_RATE * CHUNK_OVERLAP_IN_SECONDS
+    // --- END OF CHUNKING CONSTANTS ---
+
     companion object {
         private const val TAG = "AsrService"
     }
 
     init {
-        // --- MODIFIED: Don't init preprocessor ---
-        // preprocessor = AudioPreprocessor(context)
         vocab = IndicVocab(context)
         Log.d(TAG, "AsrService initialized.")
     }
@@ -72,13 +75,13 @@ class AsrService(private val context: Context) {
             if (areRnntModelsLoaded && !areAnyRnntSessionsClosed() && preprocessorModule != null) return true
             Log.i(TAG, "Starting lazy loading of RNN-T ONNX models and PyTorch Preprocessor...")
             try {
-                // --- ADDED: Load PyTorch Preprocessor ---
+                // --- MODIFIED: Load PyTorch Preprocessor (Full Module) ---
                 if (preprocessorModule == null) {
                     val preprocessorPath = copyAssetToFile("indic_model/preprocessor.ts").absolutePath
                     preprocessorModule = Module.load(preprocessorPath)
                     Log.d(TAG, "Loaded PyTorch preprocessor.ts")
                 }
-                // --- END ADDITION ---
+                // --- END MODIFICATION ---
 
                 val encoderFileName = "indic_model/encoder.quant.int8.onnx"
                 Log.d(TAG, "Attempting to load encoder: $encoderFileName")
@@ -122,13 +125,13 @@ class AsrService(private val context: Context) {
             if (isCtcDecoderLoaded && !encoderSession.isClosedOrNull() && !ctcDecoderSession.isClosedOrNull() && preprocessorModule != null) { return true }
             Log.i(TAG, "Starting lazy loading of CTC ONNX models and PyTorch Preprocessor...")
             try {
-                // --- ADDED: Load PyTorch Preprocessor ---
+                // --- MODIFIED: Load PyTorch Preprocessor (Full Module) ---
                 if (preprocessorModule == null) {
                     val preprocessorPath = copyAssetToFile("indic_model/preprocessor.ts").absolutePath
                     preprocessorModule = Module.load(preprocessorPath)
                     Log.d(TAG, "Loaded PyTorch preprocessor.ts")
                 }
-                // --- END ADDITION ---
+                // --- END MODIFICATION ---
 
                 val encoderFileName = "indic_model/encoder.quant.int8.onnx" // Assume quantized
                 if (encoderSession.isClosedOrNull()) {
@@ -180,7 +183,6 @@ class AsrService(private val context: Context) {
         // preprocessorModule is shared, don't close here
     }
 
-    // (createSessionInternal, copyAssetToFile, getPostNetSessionInternal, isClosedOrNull - NO CHANGES)
     private fun createSessionInternal(assetPath: String): OrtSession? {
         Log.d(TAG, "Attempting to load model by copying from asset path: $assetPath")
         val modelFile: File? = try { copyAssetToFile(assetPath) } catch (e: Exception) { Log.e(TAG, "Failed to copy asset $assetPath to cache", e); null }
@@ -247,7 +249,7 @@ class AsrService(private val context: Context) {
     }
 
 
-    // (Audio reading/resampling - NO CHANGES)
+    // --- MODIFIED: `readAudioFile` now reads raw .wav files ---
     private fun readAudioFile(filePath: String): FloatArray {
         val file = File(filePath)
         if (!file.exists()) {
@@ -291,14 +293,13 @@ class AsrService(private val context: Context) {
         }
     }
 
-    // We no longer need this, but we'll keep it to prevent compile errors
-    // in case it's referenced elsewhere.
+    // This function is no longer used, but we'll keep it as a stub.
     private fun resampleLinear(input: FloatArray, inputRate: Int, outputRate: Int): FloatArray {
         Log.w(TAG, "resampleLinear called, but audio should already be 16kHz.")
         if (inputRate == outputRate) return input
         return input // Just return the original array
     }
-    // (transposeFloatArray - NO CHANGES)
+
     private fun transposeFloatArray(data: FloatArray, shape: LongArray, permutation: IntArray): Pair<FloatArray, LongArray> {
         if (shape.size != 3 || permutation.size != 3) {
             throw IllegalArgumentException("Only 3D transpose is supported for this helper.")
@@ -350,16 +351,14 @@ class AsrService(private val context: Context) {
     }
 
 
-    // --- MODIFIED: runEncoder to use PyTorch preprocessor ---
-    private fun runEncoder(filePath: String): Triple<FloatArray, LongArray, LongArray?>? {
-        Log.d(TAG, "Starting runEncoder for: $filePath")
-        val audioFloats = readAudioFile(filePath)
+    // --- MODIFIED: runEncoder now takes a FloatArray (a chunk) instead of a filePath ---
+    private fun runEncoder(audioFloats: FloatArray): Triple<FloatArray, LongArray, LongArray?>? {
         if (audioFloats.isEmpty()) {
-            Log.e(TAG, "Audio read or resampling failed.")
+            Log.e(TAG, "Audio chunk is empty.")
             return null
         }
 
-        Log.d(TAG, "Running PyTorch Preprocessor...")
+        Log.d(TAG, "Running PyTorch Preprocessor on chunk...")
         val melSpectrogramFloats: FloatArray
         val melSpectrogramShape: LongArray
         val outputNumFrames: Long
@@ -372,12 +371,10 @@ class AsrService(private val context: Context) {
 
         try {
             // 1. Prepare PyTorch Preprocessor Inputs
-            // input_signal=audio_tensor
             audioTensor = Tensor.fromBlob(audioFloats, longArrayOf(1, audioFloats.size.toLong()))
-            // length=audio_length (torch.long)
             pyLengthTensor = Tensor.fromBlob(longArrayOf(audioFloats.size.toLong()), longArrayOf(1))
 
-            Log.d(TAG,"Running preprocessor.forward()...")
+            Log.v(TAG,"Running preprocessor.forward()...")
             // 2. Run PyTorch Preprocessor
             val preprocessorResult = preprocessorModule!!.forward(
                 IValue.from(audioTensor),
@@ -390,37 +387,32 @@ class AsrService(private val context: Context) {
             val lengthTensorOut = tuple[1].toTensor()
 
             melSpectrogramFloats = signalTensor.dataAsFloatArray
-            melSpectrogramShape = signalTensor.shape() // Should be [1, Mels, Frames]
-            val outputNumFramesLong = lengthTensorOut.dataAsLongArray // Should be [Frames]
+            melSpectrogramShape = signalTensor.shape()
+            val outputNumFramesLong = lengthTensorOut.dataAsLongArray
             outputNumFrames = outputNumFramesLong[0]
 
-            Log.d(TAG,"Preprocessor output size: ${melSpectrogramFloats.size}, Shape: ${melSpectrogramShape.contentToString()}, NumFrames: $outputNumFrames")
+            Log.v(TAG,"Preprocessor output size: ${melSpectrogramFloats.size}, Shape: ${melSpectrogramShape.contentToString()}, NumFrames: $outputNumFrames")
 
             if (outputNumFrames == 0L || melSpectrogramFloats.isEmpty()) {
-                Log.e(TAG, "Preprocessing error: 0 frames generated.")
+                Log.e(TAG, "Preprocessing error: 0 frames generated for chunk.")
                 return null
             }
 
             // 4. Prepare ONNX Encoder Inputs (from PyTorch outputs)
             melTensor = OnnxTensor.createTensor(ortEnvironment, FloatBuffer.wrap(melSpectrogramFloats), melSpectrogramShape)
-            // Python script uses astype(np.int64), so we use LongBuffer
             onnxLengthTensor = OnnxTensor.createTensor(ortEnvironment, LongBuffer.wrap(outputNumFramesLong), longArrayOf(1))
 
-            Log.d(TAG,"Created ONNX tensors - Mel shape: ${melSpectrogramShape.contentToString()}, Length shape: [1]")
-
-            Log.d(TAG, "Running ONNX encoder model...")
+            Log.d(TAG, "Running ONNX encoder model on chunk...")
             val encoderInputs = mapOf(
-                "audio_signal" to melTensor, // This name must match encoder.onnx
-                "length" to onnxLengthTensor     // This name must match encoder.onnx
+                "audio_signal" to melTensor,
+                "length" to onnxLengthTensor
             )
 
             // 5. Run ONNX Encoder
             encoderSession!!.run(encoderInputs).use { results ->
-                Log.d(TAG,"Encoder run successful. Processing results...")
+                Log.d(TAG,"Encoder run successful for chunk.")
                 val outputsTensor = results.get("outputs").get() as OnnxTensor
                 val lengthsTensor = results.get("encoded_lengths").get() as OnnxTensor
-
-                Log.d(TAG,"Encoder output shapes: Outputs=${outputsTensor.info.shape.contentToString()}, Lengths=${lengthsTensor.info.shape.contentToString()}")
 
                 val outputsArray = outputsTensor.floatBuffer.array()
                 val outputShape = outputsTensor.info.shape
@@ -431,7 +423,7 @@ class AsrService(private val context: Context) {
                 result = Triple(outputsArray, outputShape, lengthsArray)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Encoder run (including preprocessing) failed", e)
+            Log.e(TAG, "Encoder run (including preprocessing) failed for chunk", e)
             result = null
         } finally {
             // Clean up all tensors
@@ -441,9 +433,6 @@ class AsrService(private val context: Context) {
             onnxLengthTensor?.close()
         }
 
-        if (result != null) {
-            Log.d(TAG, "Encoder done. Output shape: ${result.second.contentToString()}, Reported output frames: ${result.third?.firstOrNull()}")
-        }
         return result
     }
     // --- END MODIFICATION ---
@@ -451,24 +440,31 @@ class AsrService(private val context: Context) {
 
     /**
      * Replicates the RNNT inference logic from simple_inference.py
+     * WARNING: This function has NOT been refactored for chunking and will
+     * OOM on large files. It is kept here for completeness but should not
+     * be used on long audio until it is properly statefully refactored.
+     * * CURRENT BEHAVIOR: Processes FIRST CHUNK ONLY.
      */
     suspend fun transcribeRnnt(filePath: String, language: String): String {
-        Log.i(TAG, "Starting RNNT transcription for '$language' on file: $filePath")
+        Log.w(TAG, "RNNT transcription for large files is not fully implemented. Processing FIRST CHUNK (15s) ONLY.")
         if (!ensureRnntModelsLoaded()) {
-            return "[Error: RNN-T Models could not be loaded or are invalid]"
+            return "[Error: RNN-T Models could not be loaded]"
         }
         val postNet = getPostNetSessionInternal(language)
         if (postNet == null) {
             return "[Error: Post-net model for '$language' not found or failed to load]"
         }
 
-        // 1. Run Encoder (Handles preprocessing)
-        // --- THIS FUNCTION IS NOW MODIFIED to use PyTorch preprocessor ---
-        val encoderResult = runEncoder(filePath)
+        // 1. Run Encoder on FIRST CHUNK
+        val fullAudio = readAudioFile(filePath)
+        if (fullAudio.isEmpty()) return "[Error: Audio file empty or unreadable]"
+
+        val chunk = fullAudio.sliceArray(0 until min(fullAudio.size, MAIN_CHUNK_IN_SAMPLES))
+        val encoderResult = runEncoder(chunk)
+
         if (encoderResult == null) {
-            return "[Encoder Failed]"
+            return "[Encoder Failed on first chunk]"
         }
-        // --- END MODIFICATION ---
 
         val (encoderOutputs, encoderShape, encodedLengthsLong) = encoderResult
         if (encodedLengthsLong == null || encodedLengthsLong.isEmpty()) {
@@ -523,7 +519,6 @@ class AsrService(private val context: Context) {
 
             // 4. RNNT Decode Loop Initialization
             Log.d(TAG, "Initializing RNNT decode loop state...")
-            // --- Use updated vocab.sosId ---
             val hypothesis = mutableListOf(vocab.sosId)
             var hState = FloatArray(predRnnLayers * 1 * predRnnHiddenDim) { 0f }
             var cState = FloatArray(predRnnLayers * 1 * predRnnHiddenDim) { 0f }
@@ -645,7 +640,6 @@ class AsrService(private val context: Context) {
 
 
                         val (predToken, maxLogProb) = logSoftmaxArgmax(logitsData)
-                        // --- Use updated vocab.blankId ---
                         Log.d(TAG, "   t=$t, symbol=$symbolsAdded -> pred_token=$predToken (blank=${predToken == vocab.blankId}), max_logProb=%.4f".format(maxLogProb))
 
                         if (predToken == vocab.blankId) {
@@ -672,8 +666,7 @@ class AsrService(private val context: Context) {
             } // End outer for
 
             Log.d(TAG, "RNN-T decoding finished.")
-            // --- Use updated vocab.decode ---
-            return vocab.decode(hypothesis, language)
+            return "(First 15s only): " + vocab.decode(hypothesis, language)
 
         } catch (e: Exception) {
             Log.e(TAG, "Error during RNNT transcription", e)
@@ -685,7 +678,6 @@ class AsrService(private val context: Context) {
     }
 
 
-    // (logSoftmaxArgmax - NO CHANGES)
     private fun logSoftmaxArgmax(logits: FloatArray): Pair<Int, Float> {
         if (logits.isEmpty()) {
             return Pair(-1, -Float.MAX_VALUE)
@@ -712,51 +704,102 @@ class AsrService(private val context: Context) {
     }
 
 
-    // --- MODIFIED: transcribeCtc to use language masks ---
+    // --- MODIFIED: `transcribeCtc` now implements the overlapping window ---
     suspend fun transcribeCtc(filePath: String, language: String): String {
         if (!ensureCtcModelsLoaded()) return "[Error: CTC Models could not be loaded]"
 
-        // 1. Run Encoder (which now uses the PyTorch preprocessor)
-        val encoderResult = runEncoder(filePath) ?: return "[Encoder Failed]"
-        val (encoderOutputs, encoderShape, encodedLengthsLong) = encoderResult
-        if (encodedLengthsLong == null || encodedLengthsLong.isEmpty()) {
-            Log.e(TAG, "Encoder did not return valid output lengths for CTC.")
-            return "[Encoder Lengths Error]"
-        }
-        val encodedLength = encodedLengthsLong[0].toInt()
+        // 1. Load the full audio file ONCE.
+        val fullAudio = readAudioFile(filePath)
+        if (fullAudio.isEmpty()) return "[Error: Audio file empty or unreadable]"
 
-        // --- NEW: Get Language Mask ---
-        val maskIndices = vocab.getMaskFor(language)
-        if (maskIndices == null) {
-            Log.e(TAG, "CTC Error: No language_mask found for '$language'")
-            return "[Error: No language mask for '$language']"
-        }
-        val langVocabSize = maskIndices.size
-        Log.d(TAG, "Loaded language mask for '$language' with $langVocabSize tokens.")
-        // --- END NEW ---
+        val finalTranscript = StringBuilder()
+        var currentPosition = 0 // This marks the start of the *new* audio
 
-        // 2. Run CTC Decoder
-        if (encoderShape.size != 3 || encoderShape[0] != 1L) {
-            Log.e(TAG,"Unexpected encoder output shape for CTC Decoder: ${encoderShape.contentToString()}")
-            return "[Error: Unexpected encoder shape]"
-        }
-        val ctcDecoderInputTensor = OnnxTensor.createTensor(ortEnvironment, FloatBuffer.wrap(encoderOutputs), encoderShape)
-        Log.d(TAG, "Running CTC Decoder model...")
-        val globalLogits: FloatArray // Full logits: [1, Time, GlobalVocabSize]
-        val timeSteps: Int
-        val globalVocabSize: Int
+        Log.i(TAG, "Starting CTC chunked transcription... File samples: ${fullAudio.size}")
 
+        while (currentPosition < fullAudio.size) {
+
+            // --- START OF OVERLAP CHUNK LOGIC ---
+            // Start of the chunk (include overlap)
+            val chunkStart = max(0, currentPosition - CHUNK_OVERLAP_IN_SAMPLES)
+            // End of the chunk
+            val chunkEnd = min(fullAudio.size, currentPosition + MAIN_CHUNK_IN_SAMPLES)
+
+            // Get the audio slice
+            val chunk = fullAudio.sliceArray(chunkStart until chunkEnd)
+
+            Log.d(TAG, "Processing chunk: samples $chunkStart to $chunkEnd")
+
+            // Check if the chunk is just leftover overlap from the end
+            if (chunk.size < CHUNK_OVERLAP_IN_SAMPLES && currentPosition > 0) {
+                Log.d(TAG, "Skipping final chunk (it's all overlap).")
+                break
+            }
+            // --- END OF OVERLAP CHUNK LOGIC ---
+
+            // 2. Run Encoder on the CHUNK
+            val encoderResult = runEncoder(chunk)
+            if (encoderResult == null) {
+                Log.e(TAG, "Encoder failed for chunk at $currentPosition")
+                currentPosition += MAIN_CHUNK_IN_SAMPLES // Skip this chunk
+                continue
+            }
+
+            val (encoderOutputs, encoderShape, encodedLengthsLong) = encoderResult
+            if (encodedLengthsLong == null || encodedLengthsLong.isEmpty()) {
+                Log.e(TAG, "Encoder did not return valid output lengths for CTC chunk.")
+                currentPosition += MAIN_CHUNK_IN_SAMPLES
+                continue
+            }
+            val encodedLength = encodedLengthsLong[0].toInt()
+
+            // 3. Get Language Mask (same for all chunks)
+            val maskIndices = vocab.getMaskFor(language)
+            if (maskIndices == null) {
+                Log.e(TAG, "CTC Error: No language_mask found for '$language'")
+                return "[Error: No language mask for '$language']"
+            }
+
+            // 4. Run CTC Decoder on the CHUNK's encoder output
+            val chunkTranscript = runCtcDecoder(encoderOutputs, encoderShape, encodedLength, maskIndices, language)
+
+            // 5. Append transcript and advance
+            // NOTE: This simple implementation will have repeated words at the seams.
+            finalTranscript.append(chunkTranscript).append(" ")
+            currentPosition += MAIN_CHUNK_IN_SAMPLES
+
+            // Yield to prevent blocking the thread entirely
+            kotlinx.coroutines.yield()
+        }
+
+        Log.i(TAG, "Chunked transcription finished.")
+        return finalTranscript.toString().trim()
+    }
+
+    // --- NEW: Extracted CTC Decoder logic into its own function ---
+    private fun runCtcDecoder(
+        encoderOutputs: FloatArray,
+        encoderShape: LongArray,
+        encodedLength: Int,
+        maskIndices: List<Int>,
+        language: String
+    ): String {
+
+        var ctcDecoderInputTensor: OnnxTensor? = null
         try {
+            if (encoderShape.size != 3 || encoderShape[0] != 1L) {
+                Log.e(TAG,"Unexpected encoder output shape for CTC Decoder: ${encoderShape.contentToString()}")
+                return ""
+            }
+            ctcDecoderInputTensor = OnnxTensor.createTensor(ortEnvironment, FloatBuffer.wrap(encoderOutputs), encoderShape)
+            Log.d(TAG, "Running CTC Decoder model on chunk...")
+            val globalLogits: FloatArray
+            val timeSteps: Int
+            val globalVocabSize: Int
+
             ctcDecoderSession!!.run(Collections.singletonMap("encoder_output", ctcDecoderInputTensor)).use { results ->
                 (results[0] as OnnxTensor).use { logitsTensor ->
                     val logitsShape = logitsTensor.info.shape
-                    Log.d(TAG,"CTC Decoder global logits shape: ${logitsShape.contentToString()}")
-
-                    if (logitsShape.size != 3 || logitsShape[0] != 1L) {
-                        Log.e(TAG,"CTC Decoder output shape has wrong dimensions: ${logitsShape.contentToString()}")
-                        return "[Error: CTC Decoder output dimension mismatch]"
-                    }
-
                     timeSteps = logitsShape[1].toInt()
                     globalVocabSize = logitsShape[2].toInt()
 
@@ -769,58 +812,52 @@ class AsrService(private val context: Context) {
                     logitsBuffer.get(globalLogits)
                 }
             }
+
+            // 3. Greedy Decode using MASK
+            val decodedMaskIndices = IntArray(timeSteps)
+            for (t in 0 until timeSteps) {
+                val offset = t * globalVocabSize
+                var bestMaskIndex = 0
+                var maxLogit = -Float.MAX_VALUE
+
+                // Iterate only over the indices specified in the mask
+                for (maskIndex in maskIndices.indices) { // 0 to langVocabSize-1
+                    val globalIndex = maskIndices[maskIndex] // Get the index into the global logits
+                    if (globalIndex < 0 || globalIndex >= globalVocabSize) {
+                        // Log.e(TAG, "Mask index $globalIndex out of bounds for global vocab size $globalVocabSize")
+                        continue
+                    }
+                    val logit = globalLogits[offset + globalIndex]
+                    if (logit > maxLogit) {
+                        maxLogit = logit
+                        bestMaskIndex = maskIndex // Store the index *of the mask*
+                    }
+                }
+                decodedMaskIndices[t] = bestMaskIndex
+            }
+
+            // 4. Merge repeats
+            val mergedIndices = mutableListOf<Int>()
+            var lastId = -1
+            decodedMaskIndices.forEach { id ->
+                if (id != lastId) {
+                    mergedIndices.add(id)
+                    lastId = id
+                }
+            }
+
+            // 5. Remove blank
+            val finalIds = mergedIndices.filter { it != vocab.blankId }
+
+            // 6. Decode
+            return vocab.decode(finalIds, language)
+
         } catch (e: Exception) {
             Log.e(TAG, "CTC Decoder run failed", e)
-            return "[Error: CTC Decoder inference failed]"
+            return "[Error: CTC chunk failed]"
         } finally {
-            ctcDecoderInputTensor.close()
+            ctcDecoderInputTensor?.close()
         }
-
-        // 3. --- NEW: Greedy Decode using MASK ---
-        // This replicates `pred_indices = np.argmax(lang_specific_logits, axis=-1)[0]`
-        Log.d(TAG, "Running CTC Greedy Decode with language mask (T=$timeSteps, V_global=$globalVocabSize, V_lang=$langVocabSize)...")
-        val decodedMaskIndices = IntArray(timeSteps) // This will hold indices *into the mask*
-
-        for (t in 0 until timeSteps) {
-            val offset = t * globalVocabSize
-            var bestMaskIndex = 0 // Index *of the mask* (0 to langVocabSize-1)
-            var maxLogit = -Float.MAX_VALUE
-
-            // Iterate only over the indices specified in the mask
-            for (maskIndex in maskIndices.indices) { // 0 to langVocabSize-1
-                val globalIndex = maskIndices[maskIndex] // Get the index into the global logits
-                if (globalIndex < 0 || globalIndex >= globalVocabSize) {
-                    Log.e(TAG, "Mask index $globalIndex out of bounds for global vocab size $globalVocabSize")
-                    continue
-                }
-                val logit = globalLogits[offset + globalIndex]
-                if (logit > maxLogit) {
-                    maxLogit = logit
-                    bestMaskIndex = maskIndex // Store the index *of the mask*
-                }
-            }
-            decodedMaskIndices[t] = bestMaskIndex
-        }
-
-        // 4. Merge repeats
-        val mergedIndices = mutableListOf<Int>()
-        var lastId = -1
-        decodedMaskIndices.forEach { id ->
-            if (id != lastId) {
-                mergedIndices.add(id)
-                lastId = id
-            }
-        }
-
-        // 5. Remove blank (using vocab.blankId, which is 256)
-        // This filters based on the *mask index*
-        val finalIds = mergedIndices.filter { it != vocab.blankId }
-        // --- END MODIFICATION ---
-
-        // 6. Decode with IndicVocab (using language-specific subset)
-        // vocab.decode() expects indices into the language-specific vocab, which is exactly
-        // what finalIds now contains (they are indices from 0..langVocabSize-1)
-        return vocab.decode(finalIds, language)
     }
 
 
@@ -840,7 +877,7 @@ class AsrService(private val context: Context) {
             }
             postNetSessions.clear()
 
-            preprocessorModule = null // --- ADDED ---
+            preprocessorModule = null
             encoderSession = null
             rnntDecoderSession = null
             jointEncSession = null
