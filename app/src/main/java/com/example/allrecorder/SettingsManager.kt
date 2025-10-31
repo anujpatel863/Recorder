@@ -6,7 +6,10 @@ import androidx.preference.PreferenceManager
 
 object SettingsManager {
 
-    private lateinit var prefs: SharedPreferences
+    // --- START OF CHANGE ---
+    // Make prefs accessible to MainActivity
+    lateinit var prefs: SharedPreferences
+    // --- END OF CHANGE ---
 
     private const val DIARIZATION_MODEL_KEY = "diarization_model"
     private const val CHUNK_DURATION_KEY = "chunk_duration"

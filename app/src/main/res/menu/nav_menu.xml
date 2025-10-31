@@ -1,9 +1,57 @@
 <?xml version="1.0" encoding="utf-8"?>
-<menu xmlns:android="http://schemas.android.com/apk/res/android">
-    <group android:checkableBehavior="single">
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    tools:showIn="navigation_view">
+
+    <group
+        android:id="@+id/group_recording"
+        android:checkableBehavior="none">
         <item
-            android:id="@+id/nav_settings"
-            android:icon="@android:drawable/ic_menu_manage"
-            android:title="Settings" />
+            android:id="@+id/nav_header_recording"
+            android:title="Recording"
+            android:enabled="false" />
+        <item
+            android:id="@+id/nav_chunk_duration"
+            android:icon="@android:drawable/ic_menu_save"
+            android:title="Recording Chunk Duration" />
     </group>
+
+    <group
+        android:id="@+id/group_processing"
+        android:checkableBehavior="none">
+        <item
+            android:id="@+id/nav_header_processing"
+            android:title="Processing"
+            android:enabled="false" />
+        <item
+            android:id="@+id/nav_diarization_model"
+            android:icon="@android:drawable/ic_menu_directions"
+            android:title="Diarization Model" />
+        <item
+            android:id="@+id/nav_silence_sensitivity"
+            android:icon="@android:drawable/ic_menu_recent_history"
+            android:title="Silence Sensitivity" />
+        <item
+            android:id="@+id/nav_speaker_strictness"
+            android:icon="@android:drawable/ic_menu_myplaces"
+            android:title="Speaker Detection Strictness" />
+    </group>
+
+    <group
+        android:id="@+id/group_transcription"
+        android:checkableBehavior="none">
+        <item
+            android:id="@+id/nav_header_transcription"
+            android:title="Transcription (ASR)"
+            android:enabled="false" />
+        <item
+            android:id="@+id/nav_asr_language"
+            android:icon="@android:drawable/ic_menu_mapmode"
+            android:title="Transcription Language" />
+        <item
+            android:id="@+id/nav_asr_decoder"
+            android:icon="@android:drawable/ic_menu_sort_alphabetically"
+            android:title="Decoder Type" />
+    </group>
+
 </menu>
