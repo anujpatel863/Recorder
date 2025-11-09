@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     id("kotlin-kapt")
+    alias(libs.plugins.compose.compiler)
 }
 
 android {
@@ -36,6 +37,10 @@ android {
     }
     buildFeatures {
         viewBinding = true
+        compose = true
+    }
+    composeOptions {
+        kotlinCompilerExtensionVersion = "1.9.4"
     }
 }
 // In app/build.gradle.kts
@@ -43,51 +48,63 @@ android {
 dependencies {
 
     implementation(libs.androidx.core.ktx)
-    implementation(libs.androidx.appcompat)
+    // Use activity-compose for setContent
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.benchmark.traceprocessor)
+
+    // Implement the Compose BOM
+    val composeBom = platform(libs.androidx.compose.bom)
+    implementation(composeBom)
+    androidTestImplementation(composeBom)
+
+    // Add the specific Compose libraries we need
+    implementation(libs.androidx.compose.ui)
+    implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.foundation)
+    implementation(libs.androidx.compose.ui.tooling.preview)
+    debugImplementation(libs.androidx.compose.ui.tooling)
+    implementation("androidx.compose.material:material-icons-extended")
+    implementation("androidx.compose.runtime:runtime-livedata")
+
+    // --- Lifecycle & Navigation ---
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.service)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.navigation.compose)
+
+    // --- XML libs (No longer needed for full migration) ---
+    // Keep 'material' for now, as it's used for the XML theme migration
     implementation(libs.material)
-    implementation(libs.androidx.activity)
-    implementation(libs.androidx.constraintlayout)
-    implementation(libs.androidx.viewpager2)
-    implementation(libs.androidx.fragment.ktx)
+    // implementation(libs.androidx.appcompat) // Removed
+    // implementation(libs.androidx.constraintlayout) // Removed
+    // implementation(libs.androidx.viewpager2) // Removed
+    // implementation(libs.androidx.fragment.ktx) // Removed
+
+    // --- Database & Worker ---
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
+    kapt(libs.androidx.room.compiler)
+    implementation(libs.androidx.work.runtime.ktx)
+
+    // --- Coroutines ---
+    implementation(libs.kotlinx.coroutines.android)
+
+    // --- ML Libs ---
+    implementation(libs.tensorflow.lite)
+    implementation(libs.tensorflow.lite.support)
+    implementation(libs.onnxruntime.android)
+    implementation(libs.pytorch.android)
+    implementation(libs.pytorch.android.torchvision)
+    implementation(libs.jtransforms)
+
+    // --- Other ---
+    implementation(libs.gson)
+    implementation(libs.androidx.preference.ktx)
+
+    // --- Testing ---
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
-
-    // TensorFlow Lite - Main library for custom processing
-    implementation("org.tensorflow:tensorflow-lite:2.13.0")
-    // Audio support for TFLite
-    implementation("org.tensorflow:tensorflow-lite-support-api:0.4.4")
-
-    // WorkManager for background tasks
-    implementation("androidx.work:work-runtime-ktx:2.9.0")
-
-    // Room Database
-    val roomVersion = "2.6.1"
-    implementation("androidx.room:room-runtime:$roomVersion")
-    kapt("androidx.room:room-compiler:$roomVersion")
-    implementation("androidx.room:room-ktx:$roomVersion")
-
-    // Coroutines for background tasks
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
-
-
-    // Lifecycle for Service
-    implementation("androidx.lifecycle:lifecycle-service:2.7.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
-
-    // Testing libraries (optional but good practice)
-    testImplementation(libs.junit)
-    androidTestImplementation(libs.androidx.junit)
-    androidTestImplementation(libs.androidx.espresso.core)
-
-    implementation("com.google.code.gson:gson:2.10.1")
-    // ONNX Runtime for ASR Model
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.18.0")
-    // For creating a settings screen
-    implementation("androidx.preference:preference-ktx:1.2.1")
-
-    implementation("com.github.wendykierp:JTransforms:3.1")
-
-    implementation("org.pytorch:pytorch_android:2.1.0")
-    implementation("org.pytorch:pytorch_android_torchvision:2.1.0")
+    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
 }
