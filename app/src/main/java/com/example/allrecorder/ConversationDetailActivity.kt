@@ -42,16 +42,21 @@ class ConversationDetailActivity : ComponentActivity() {
         setContent {
             AllRecorderTheme {
                 val playerState by viewModel.playerState.collectAsState()
-                val recording by viewModel.recording.collectAsState()
+                val recordings by viewModel.recordings.collectAsState() // MODIFIED
+                val transcriptionStatus by viewModel.transcriptionStatus.collectAsState()
+                val transcript by viewModel.transcript.collectAsState()
 
                 ConversationDetailScreen(
-                    recording = recording,
+                    recordings = recordings, // MODIFIED
                     playerState = playerState,
+                    transcriptionStatus = transcriptionStatus,
+                    transcript = transcript,
                     onNavigateUp = { finish() },
                     onPlayPause = viewModel::onPlayPauseClicked,
                     onRewind = viewModel::onRewind,
                     onForward = viewModel::onForward,
-                    onSeek = viewModel::onSeek
+                    onSeek = viewModel::onSeek,
+                    onTranscribe = viewModel::runDiarizationAndTranscription
                 )
             }
         }

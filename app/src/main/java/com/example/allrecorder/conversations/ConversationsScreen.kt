@@ -1,4 +1,4 @@
-package com.example.allrecorder.ui.conversations
+package com.example.allrecorder.conversations
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column

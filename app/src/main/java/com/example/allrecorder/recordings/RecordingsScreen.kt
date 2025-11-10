@@ -1,6 +1,5 @@
-package com.example.allrecorder.ui.recordings
+package com.example.allrecorder.recordings
 
-import android.text.TextUtils
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -11,7 +10,6 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.livedata.observeAsState
@@ -37,27 +35,47 @@ fun RecordingsScreen(
     val playerState by viewModel.playerState.collectAsState()
     val isRecording by remember { derivedStateOf { viewModel.isServiceRecording } }
     val context = LocalContext.current
+    val audioData by viewModel.audioData.collectAsState()
+
+    // Bind to service when the screen is shown
+    DisposableEffect(Unit) {
+        viewModel.bindService(context)
+        onDispose {
+            viewModel.unbindService(context)
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(8.dp)
-        ) {
-            items(recordings) { recording ->
-                RecordingItem(
-                    recording = recording,
-                    playerState = playerState,
-                    onPlayPause = { viewModel.onPlayPauseClicked(recording) },
-                    onRewind = viewModel::onRewind,
-                    onForward = viewModel::onForward,
-                    onSeek = viewModel::onSeek,
-                    onRename = { viewModel.renameRecording(context, recording) },
-                    onDelete = { viewModel.deleteRecording(context, recording) },
-                    onTranscribe = { viewModel.transcribeRecording(context, recording) }
-                )
+        Column {
+            if (isRecording) {
+                AudioVisualizer(audioData = audioData)
             }
-            // Add padding for the button
-            item { Spacer(modifier = Modifier.height(80.dp)) }
+            // In C:/Users/patel/Desktop/allRecorder/app/src/main/java/com/example/allrecorder/recordings/RecordingsScreen.kt
+
+
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(8.dp)
+            ) {
+                // Explicitly define the type of 'recording' as 'Recording'
+                items(recordings) { recording: Recording ->
+                    RecordingItem(
+                        recording = recording,
+                        playerState = playerState,
+                        onPlayPause = { viewModel.onPlayPauseClicked(recording) },
+                        onRewind = viewModel::onRewind,
+                        onForward = viewModel::onForward,
+                        onSeek = viewModel::onSeek,
+                        onRename = { viewModel.renameRecording(context, recording) },
+                        onDelete = { viewModel.deleteRecording(context, recording) },
+                        onTranscribe = { viewModel.transcribeRecording(context, recording) }
+                    )
+                }
+                // Add padding for the button
+                item { Spacer(modifier = Modifier.height(80.dp)) }
+            }
+//...
+
         }
 
         Button(

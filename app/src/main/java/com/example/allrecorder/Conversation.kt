@@ -10,5 +10,6 @@ data class Conversation(
     var title: String,
     val startTime: Long, // Absolute start time (epoch milliseconds)
     val endTime: Long,   // Absolute end time (epoch milliseconds)
-    val speakerCount: Int
+    val speakerCount: Int,
+    var diarizedTranscript: String? = null // JSON string of List<FinalTranscriptSegment>
 )

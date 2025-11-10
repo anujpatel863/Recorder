@@ -5,6 +5,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.app.Service.STOP_FOREGROUND_REMOVE
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioFormat
@@ -20,6 +21,9 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
@@ -31,7 +35,6 @@ import java.util.*
 
 class RecordingService : Service() {
 
-    // --- NEW AudioRecord Implementation ---
     private var audioRecord: AudioRecord? = null
     private var recordingJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO)
@@ -40,22 +43,29 @@ class RecordingService : Service() {
     private val channelConfig = AudioFormat.CHANNEL_IN_MONO
     private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
     private var bufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
-    // --- End new properties ---
 
     private var isRecordingInternal = false
     private lateinit var recordingDao: RecordingDao
     private var recordingStartTime: Long = 0
     private lateinit var filePath: String
-    private lateinit var rawFilePath: String // For temporary raw PCM data
 
     private val chunkHandler = Handler(Looper.getMainLooper())
     private var chunkRunnable: Runnable? = null
+
+    private val binder = LocalBinder()
+    private val _audioDataFlow = MutableStateFlow(ByteArray(0))
+    val audioDataFlow: StateFlow<ByteArray> = _audioDataFlow.asStateFlow()
+
+    inner class LocalBinder : android.os.Binder() {
+        fun getService(): RecordingService = this@RecordingService
+    }
 
     companion object {
         private const val TAG = "RecordingService"
         private const val NOTIFICATION_CHANNEL_ID = "RecordingChannel"
         private const val NOTIFICATION_ID = 12345
         var isRecording = false
+        const val ACTION_STOP = "com.example.allrecorder.ACTION_STOP"
     }
 
     override fun onCreate() {
@@ -65,6 +75,10 @@ class RecordingService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP) {
+            stopRecording()
+            return START_NOT_STICKY
+        }
         startRecording()
         return START_STICKY
     }
@@ -81,12 +95,13 @@ class RecordingService : Service() {
             return
         }
 
-        // --- REFACTOR: Use .wav extension ---
         val fileName = "Rec_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.wav"
         filePath = File(filesDir, fileName).absolutePath
-        rawFilePath = File(filesDir, "temp_rec.raw").absolutePath // Temp file
 
         try {
+            // --- ROBUSTNESS: Write placeholder header first ---
+            writePlaceholderWavHeader(File(filePath))
+
             audioRecord = AudioRecord(
                 MediaRecorder.AudioSource.MIC,
                 sampleRate,
@@ -108,37 +123,45 @@ class RecordingService : Service() {
             startForeground(NOTIFICATION_ID, createNotification())
             Log.i(TAG, "Recording started: $filePath")
 
-            // --- REFACTOR: Start background coroutine to write file ---
             recordingJob = scope.launch {
-                writeAudioDataToFile(rawFilePath)
+                writeAudioDataToFile(filePath)
             }
             scheduleNextChunk()
 
         } catch (e: Exception) {
             Log.e(TAG, "AudioRecord start() failed", e)
-            releaseRecorder()
+            scope.launch {
+                releaseRecorder()
+            }
             stopSelf()
         }
     }
 
     private suspend fun writeAudioDataToFile(path: String) {
         val data = ByteArray(bufferSize)
-        var fileOutputStream: FileOutputStream? = null
+        // --- ROBUSTNESS: Append to the existing file ---
+        val fileOutputStream = FileOutputStream(path, true)
+        var totalBytesWritten = 0L
+
         try {
-            fileOutputStream = FileOutputStream(path)
             while (isRecordingInternal) {
                 val read = audioRecord?.read(data, 0, bufferSize) ?: 0
                 if (read > 0) {
+                    _audioDataFlow.value = data.clone()
                     fileOutputStream.write(data, 0, read)
+                    totalBytesWritten += read
                 }
             }
         } catch (e: IOException) {
-            Log.e(TAG, "Error writing raw audio file", e)
+            Log.e(TAG, "Error writing WAV file", e)
         } finally {
             try {
-                fileOutputStream?.close()
+                fileOutputStream.close()
+                // --- ROBUSTNESS: Update header after closing stream ---
+                updateWavHeader(File(path), totalBytesWritten.toInt())
+                Log.d(TAG, "WAV header updated with final size: $totalBytesWritten bytes")
             } catch (e: IOException) {
-                Log.e(TAG, "Error closing file output stream", e)
+                Log.e(TAG, "Error closing file output stream or updating header", e)
             }
         }
     }
@@ -147,39 +170,25 @@ class RecordingService : Service() {
         if (!isRecordingInternal) {
             return
         }
+        isRecordingInternal = false
+        isRecording = false
 
         cancelChunking()
-
         val recordingDuration = System.currentTimeMillis() - recordingStartTime
-        releaseRecorder() // This will stop the coroutine loop
 
-        // --- NEW: Create .wav file from raw PCM data ---
-        val rawFile = File(rawFilePath)
-        val wavFile = File(filePath)
-        try {
-            rawFile.renameTo(wavFile)
-            writeWavHeader(wavFile, channelConfig, sampleRate, audioFormat, wavFile.length().toInt())
-            Log.i(TAG, "WAV file created: $filePath")
-        } catch (e: IOException) {
-            Log.e(TAG, "Failed to create WAV file", e)
+        // Launch a coroutine to handle the suspension and DB operation
+        scope.launch {
+            // This will trigger the 'finally' block in writeAudioDataToFile, which updates the header
+            releaseRecorder()
+            saveRecordingToDatabase(filePath, recordingStartTime, recordingDuration)
         }
-        if(rawFile.exists()) rawFile.delete() // Clean up temp file
 
-        saveRecordingToDatabase(filePath, recordingStartTime, recordingDuration)
-
-        stopForeground(true)
+        stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
-    private fun releaseRecorder() {
-        if (isRecordingInternal) {
-            isRecordingInternal = false
-            isRecording = false
-        }
-
-        recordingJob?.cancel() // Stop coroutine
-        recordingJob = null
-
+    private suspend fun releaseRecorder() { // MODIFIED to be suspend
+        // This will cause the while-loop in writeAudioDataToFile to exit
         audioRecord?.apply {
             if (state == AudioRecord.STATE_INITIALIZED) {
                 try {
@@ -191,6 +200,10 @@ class RecordingService : Service() {
             release()
         }
         audioRecord = null
+
+        // Wait for the writing job to finish to ensure the header is updated
+        recordingJob?.join()
+        recordingJob = null
     }
 
     private fun scheduleNextChunk() {
@@ -199,24 +212,9 @@ class RecordingService : Service() {
             Log.i(TAG, "Scheduling next recording chunk in ${chunkDurationMillis / 1000} seconds.")
             chunkRunnable = Runnable {
                 Log.i(TAG, "Chunk time reached. Restarting recording.")
-
-                val recordingDuration = System.currentTimeMillis() - recordingStartTime
-                releaseRecorder() // This will stop the coroutine
-
-                // --- REFACTOR: Save chunk as WAV ---
-                val rawFile = File(rawFilePath)
-                val chunkWavFile = File(filePath) // Use the path already set
-                try {
-                    rawFile.renameTo(chunkWavFile)
-                    writeWavHeader(chunkWavFile, channelConfig, sampleRate, audioFormat, chunkWavFile.length().toInt())
-                    Log.i(TAG, "WAV chunk file created: $filePath")
-                    saveRecordingToDatabase(filePath, recordingStartTime, recordingDuration)
-                } catch (e: IOException) {
-                    Log.e(TAG, "Failed to create WAV chunk file", e)
-                }
-                if(rawFile.exists()) rawFile.delete()
-
-                // Start new recording
+                // Stop the current recording, which saves it
+                stopRecording()
+                // Start a new one
                 startRecording()
             }
             chunkHandler.postDelayed(chunkRunnable!!, chunkDurationMillis)
@@ -232,12 +230,13 @@ class RecordingService : Service() {
     }
 
     private fun saveRecordingToDatabase(path: String, startTime: Long, duration: Long) {
-        CoroutineScope(Dispatchers.IO).launch {
+        scope.launch {
             val newRecording = Recording(
                 filePath = path,
                 startTime = startTime,
                 duration = duration,
-                isProcessed = false
+                isProcessed = false,
+                conversationId = null // REMOVED
             )
             recordingDao.insert(newRecording)
             Log.i(TAG, "Recording saved to database: $path")
@@ -245,86 +244,65 @@ class RecordingService : Service() {
     }
 
     private fun createNotification(): Notification {
-        // ... (This function is unchanged) ...
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 NOTIFICATION_CHANNEL_ID,
                 "Recording Service",
-                NotificationManager.IMPORTANCE_DEFAULT
+                NotificationManager.IMPORTANCE_MIN // MODIFIED: Make notification less intrusive
             )
             val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(channel)
         }
 
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setContentTitle("Recording Audio")
-            .setContentText("Your device is currently recording.")
-            .setSmallIcon(R.drawable.ic_launcher_foreground) // Replace with your app's icon
+            .setContentTitle("AllRecorder is active")
+            .setContentText("Recording in progress...")
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setPriority(NotificationCompat.PRIORITY_MIN) // MODIFIED
             .build()
     }
 
     override fun onDestroy() {
         if (isRecordingInternal) {
-            stopRecording() // Ensure recording is stopped and saved
+            stopRecording()
         }
         super.onDestroy()
     }
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    override fun onBind(intent: Intent?): IBinder {
+        return binder
+    }
 
-    // --- NEW: WAV Header Writer ---
     @Throws(IOException::class)
-    private fun writeWavHeader(file: File, channelConfig: Int, sampleRate: Int, audioFormat: Int, dataSize: Int) {
-        val channels = if (channelConfig == AudioFormat.CHANNEL_IN_MONO) 1 else 2
-        val bitDepth = if (audioFormat == AudioFormat.ENCODING_PCM_16BIT) 16 else 8
+    private fun writePlaceholderWavHeader(file: File) {
+        FileOutputStream(file).use { out ->
+            val header = ByteArray(44)
+            // Write a dummy header that will be overwritten later
+            out.write(header)
+        }
+    }
+
+    @Throws(IOException::class)
+    private fun updateWavHeader(file: File, dataSize: Int) {
+        val channels = 1
+        val bitDepth = 16
         val byteRate = sampleRate * channels * bitDepth / 8
         val totalDataLen = dataSize + 36
         val header = ByteArray(44)
 
-        header[0] = 'R'.code.toByte()
-        header[1] = 'I'.code.toByte()
-        header[2] = 'F'.code.toByte()
-        header[3] = 'F'.code.toByte()
-        header[4] = (totalDataLen and 0xff).toByte()
-        header[5] = (totalDataLen shr 8 and 0xff).toByte()
-        header[6] = (totalDataLen shr 16 and 0xff).toByte()
-        header[7] = (totalDataLen shr 24 and 0xff).toByte()
-        header[8] = 'W'.code.toByte()
-        header[9] = 'A'.code.toByte()
-        header[10] = 'V'.code.toByte()
-        header[11] = 'E'.code.toByte()
-        header[12] = 'f'.code.toByte() // 'fmt ' chunk
-        header[13] = 'm'.code.toByte()
-        header[14] = 't'.code.toByte()
-        header[15] = ' '.code.toByte()
-        header[16] = 16 // 4 bytes: size of 'fmt ' chunk (16 for PCM)
-        header[17] = 0
-        header[18] = 0
-        header[19] = 0
-        header[20] = 1 // 2 bytes: AudioFormat (1 for PCM)
-        header[21] = 0
-        header[22] = channels.toByte() // 2 bytes: NumChannels
-        header[23] = 0
-        header[24] = (sampleRate and 0xff).toByte() // 4 bytes: SampleRate
-        header[25] = (sampleRate shr 8 and 0xff).toByte()
-        header[26] = (sampleRate shr 16 and 0xff).toByte()
-        header[27] = (sampleRate shr 24 and 0xff).toByte()
-        header[28] = (byteRate and 0xff).toByte() // 4 bytes: ByteRate
-        header[29] = (byteRate shr 8 and 0xff).toByte()
-        header[30] = (byteRate shr 16 and 0xff).toByte()
-        header[31] = (byteRate shr 24 and 0xff).toByte()
-        header[32] = (channels * bitDepth / 8).toByte() // 2 bytes: BlockAlign
-        header[33] = 0
-        header[34] = bitDepth.toByte() // 2 bytes: BitsPerSample
-        header[35] = 0
-        header[36] = 'd'.code.toByte() // 'data' chunk
-        header[37] = 'a'.code.toByte()
-        header[38] = 't'.code.toByte()
-        header[39] = 'a'.code.toByte()
-        header[40] = (dataSize and 0xff).toByte() // 4 bytes: DataSize
-        header[41] = (dataSize shr 8 and 0xff).toByte()
-        header[42] = (dataSize shr 16 and 0xff).toByte()
-        header[43] = (dataSize shr 24 and 0xff).toByte()
+        header[0] = 'R'.code.toByte(); header[1] = 'I'.code.toByte(); header[2] = 'F'.code.toByte(); header[3] = 'F'.code.toByte()
+        header[4] = (totalDataLen and 0xff).toByte(); header[5] = (totalDataLen shr 8 and 0xff).toByte(); header[6] = (totalDataLen shr 16 and 0xff).toByte(); header[7] = (totalDataLen shr 24 and 0xff).toByte()
+        header[8] = 'W'.code.toByte(); header[9] = 'A'.code.toByte(); header[10] = 'V'.code.toByte(); header[11] = 'E'.code.toByte()
+        header[12] = 'f'.code.toByte(); header[13] = 'm'.code.toByte(); header[14] = 't'.code.toByte(); header[15] = ' '.code.toByte()
+        header[16] = 16; header[17] = 0; header[18] = 0; header[19] = 0
+        header[20] = 1; header[21] = 0
+        header[22] = channels.toByte(); header[23] = 0
+        header[24] = (sampleRate and 0xff).toByte(); header[25] = (sampleRate shr 8 and 0xff).toByte(); header[26] = (sampleRate shr 16 and 0xff).toByte(); header[27] = (sampleRate shr 24 and 0xff).toByte()
+        header[28] = (byteRate and 0xff).toByte(); header[29] = (byteRate shr 8 and 0xff).toByte(); header[30] = (byteRate shr 16 and 0xff).toByte(); header[31] = (byteRate shr 24 and 0xff).toByte()
+        header[32] = (channels * bitDepth / 8).toByte(); header[33] = 0
+        header[34] = bitDepth.toByte(); header[35] = 0
+        header[36] = 'd'.code.toByte(); header[37] = 'a'.code.toByte(); header[38] = 't'.code.toByte(); header[39] = 'a'.code.toByte()
+        header[40] = (dataSize and 0xff).toByte(); header[41] = (dataSize shr 8 and 0xff).toByte(); header[42] = (dataSize shr 16 and 0xff).toByte(); header[43] = (dataSize shr 24 and 0xff).toByte()
 
         RandomAccessFile(file, "rw").use { raf ->
             raf.seek(0)

@@ -1,18 +1,20 @@
 package com.example.allrecorder.ui.detail
 
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import com.example.allrecorder.FinalTranscriptSegment
 import com.example.allrecorder.R
 import com.example.allrecorder.Recording
 import com.example.allrecorder.formatDuration
@@ -21,32 +23,64 @@ import java.io.File
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConversationDetailScreen(
-    recording: Recording?,
+    recordings: List<Recording>, // MODIFIED
     playerState: ConversationDetailViewModel.PlayerState,
+    transcriptionStatus: TranscriptionStatus,
+    transcript: List<FinalTranscriptSegment>,
     onNavigateUp: () -> Unit,
     onPlayPause: () -> Unit,
     onRewind: () -> Unit,
     onForward: () -> Unit,
-    onSeek: (Float) -> Unit
+    onSeek: (Float) -> Unit,
+    onTranscribe: (String) -> Unit
 ) {
+    var showLanguageMenu by remember { mutableStateOf(false) }
+    var selectedLanguage by remember { mutableStateOf("en") } // Default to English
+    val languages = listOf("en", "hi", "gu", "mr") // Example languages
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(recording?.let { File(it.filePath).nameWithoutExtension } ?: "Conversation") },
+                title = { Text(recordings.firstOrNull()?.let { File(it.filePath).nameWithoutExtension } ?: "Conversation") }, // MODIFIED
                 navigationIcon = {
                     IconButton(onClick = onNavigateUp) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    if (transcriptionStatus != TranscriptionStatus.IN_PROGRESS) {
+                        Button(onClick = { onTranscribe(selectedLanguage) }) {
+                            Text("Transcribe")
+                        }
+                    }
+                    IconButton(onClick = { showLanguageMenu = true }) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "Select Language")
+                    }
+                    DropdownMenu(
+                        expanded = showLanguageMenu,
+                        onDismissRequest = { showLanguageMenu = false }
+                    ) {
+                        languages.forEach { lang ->
+                            DropdownMenuItem(
+                                text = { Text(lang) },
+                                onClick = {
+                                    selectedLanguage = lang
+                                    showLanguageMenu = false
+                                }
+                            )
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primary,
                     titleContentColor = MaterialTheme.colorScheme.onPrimary,
-                    navigationIconContentColor = MaterialTheme.colorScheme.onPrimary
+                    navigationIconContentColor = MaterialTheme.colorScheme.onPrimary,
+                    actionIconContentColor = MaterialTheme.colorScheme.onPrimary
                 )
             )
         },
         bottomBar = {
-            if (recording != null) {
+            if (recordings.isNotEmpty()) { // MODIFIED
                 PlayerControls(
                     playerState = playerState,
                     onPlayPause = onPlayPause,
@@ -62,21 +96,57 @@ fun ConversationDetailScreen(
                 .padding(paddingValues)
                 .fillMaxSize()
         ) {
-            if (recording == null) {
-                Text("Loading...", modifier = Modifier.align(Alignment.Center))
-            } else {
-                Text(
-                    text = recording.transcript ?: "No transcript available.",
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(rememberScrollState())
-                        .padding(16.dp),
-                    style = MaterialTheme.typography.bodyLarge
-                )
+            when (transcriptionStatus) {
+                TranscriptionStatus.IN_PROGRESS -> {
+                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                }
+                TranscriptionStatus.DONE -> {
+                    if (transcript.isNotEmpty()) {
+                        TranscriptView(transcript = transcript)
+                    } else {
+                        Text("Transcription complete, but no text was generated.", modifier = Modifier.align(Alignment.Center))
+                    }
+                }
+                TranscriptionStatus.ERROR -> {
+                    Text("An error occurred during transcription.", modifier = Modifier.align(Alignment.Center))
+                }
+                TranscriptionStatus.IDLE -> {
+                    Text(
+                        "Press 'Transcribe' to start.",
+                        modifier = Modifier.align(Alignment.Center),
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                }
             }
         }
     }
 }
+
+@Composable
+fun TranscriptView(transcript: List<FinalTranscriptSegment>) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        items(transcript) { segment ->
+            Card {
+                Row(modifier = Modifier.padding(12.dp)) {
+                    Text(
+                        text = "Speaker ${segment.speakerId}:",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.width(100.dp)
+                    )
+                    Text(
+                        text = segment.text,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+        }
+    }
+}
+
 
 @Composable
 private fun PlayerControls(

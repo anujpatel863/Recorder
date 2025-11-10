@@ -42,11 +42,13 @@ import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
-import com.example.allrecorder.ui.conversations.ConversationsScreen
-import com.example.allrecorder.ui.recordings.RecordingsScreen
+import com.example.allrecorder.conversations.ConversationsScreen
+import com.example.allrecorder.recordings.RecordingsScreen
 import com.example.allrecorder.ui.theme.AllRecorderTheme
 import com.example.allrecorder.ui.theme.Monospace
+import com.example.allrecorder.ui.theme.RetroPrimaryDark
 import kotlinx.coroutines.launch
+import org.tensorflow.lite.Interpreter
 
 class MainActivity : ComponentActivity() {
 
@@ -88,6 +90,7 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
 
     @Composable
     private fun MainAppScreen() {
@@ -132,7 +135,7 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
+                        containerColor = RetroPrimaryDark,
                         titleContentColor = MaterialTheme.colorScheme.onPrimary,
                         navigationIconContentColor = MaterialTheme.colorScheme.onPrimary
                     )
@@ -140,7 +143,7 @@ class MainActivity : ComponentActivity() {
             }
         ) { paddingValues ->
             Column(modifier = Modifier.padding(paddingValues)) {
-                TabRow(
+                PrimaryTabRow(
                     selectedTabIndex = pagerState.currentPage,
                     containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = MaterialTheme.colorScheme.onPrimary

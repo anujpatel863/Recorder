@@ -1,6 +1,5 @@
 package com.example.allrecorder
 
-import androidx.lifecycle.LiveData
 import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
@@ -17,10 +16,14 @@ interface ConversationDao {
     suspend fun update(conversation: Conversation)
 
     @Query("SELECT * FROM conversations ORDER BY startTime DESC")
-    fun getAllConversations(): LiveData<List<Conversation>>
+    fun getAllConversations(): Flow<List<Conversation>>
 
     @Query("SELECT * FROM conversations WHERE id = :conversationId")
-    fun getConversationById(conversationId: Long): Flow<Conversation>
+    suspend fun getConversationById(conversationId: Long): Conversation?
+
+    @Query("UPDATE conversations SET diarizedTranscript = :transcript WHERE id = :id")
+    suspend fun updateDiarizedTranscript(id: Long, transcript: String?)
+
     @Query("SELECT * FROM conversations WHERE id = :id")
     suspend fun getConversation(id: Long): Conversation?
 }

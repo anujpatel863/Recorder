@@ -1,9 +1,13 @@
-package com.example.allrecorder.ui.recordings
+package com.example.allrecorder.recordings
 
 import android.app.Application
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import android.media.MediaPlayer
+import android.os.IBinder
+import android.util.Log
 import android.widget.EditText
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -12,6 +16,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
+import androidx.lifecycle.asLiveData
 import androidx.lifecycle.viewModelScope
 import com.example.allrecorder.*
 import kotlinx.coroutines.Dispatchers
@@ -20,30 +25,67 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
-import kotlin.math.log
 
 class RecordingsViewModel(application: Application) : AndroidViewModel(application) {
 
     private val recordingDao: RecordingDao = AppDatabase.getDatabase(application).recordingDao()
-    private val asrService: AsrService = AsrService(application)
+    private val transcriptionOrchestrator = TranscriptionOrchestrator(application)
 
-    // LiveData for the list of recordings
-    val allRecordings: LiveData<List<Recording>> = recordingDao.getAllRecordings()
+    val allRecordings: LiveData<List<Recording>> = recordingDao.getAllRecordings().asLiveData()
 
-    // State for the recording service button
     var isServiceRecording by mutableStateOf(RecordingService.isRecording)
         private set
 
-    // State for the media player
     private var mediaPlayer: MediaPlayer? = null
 
     private val _playerState = MutableStateFlow(PlayerState())
     val playerState: StateFlow<PlayerState> = _playerState.asStateFlow()
 
     private var progressUpdateJob: Job? = null
+
+    // --- VISUALIZER ---
+    private val _audioData = MutableStateFlow(ByteArray(0))
+    val audioData: StateFlow<ByteArray> = _audioData.asStateFlow()
+
+    private var recordingService: RecordingService? = null
+    private var isBound by mutableStateOf(false)
+
+    private val connection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            val binder = service as RecordingService.LocalBinder
+            recordingService = binder.getService()
+            isBound = true
+            viewModelScope.launch {
+                recordingService?.audioDataFlow?.collectLatest {
+                    _audioData.value = it
+                }
+            }
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            isBound = false
+            recordingService = null
+        }
+    }
+
+    fun bindService(context: Context) {
+        Intent(context, RecordingService::class.java).also { intent ->
+            context.bindService(intent, connection, Context.BIND_AUTO_CREATE)
+        }
+    }
+
+    fun unbindService(context: Context) {
+        if (isBound) {
+            context.unbindService(connection)
+            isBound = false
+            recordingService = null
+        }
+    }
+    // --- END VISUALIZER ---
 
     data class PlayerState(
         val playingRecordingId: Long? = null,
@@ -53,13 +95,12 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
     )
 
     init {
-        // This is a simple way to update the button state when the viewmodel is created
         viewModelScope.launch {
             while(true) {
                 if (isServiceRecording != RecordingService.isRecording) {
                     isServiceRecording = RecordingService.isRecording
                 }
-                delay(500) // Poll every 500ms
+                delay(500)
             }
         }
     }
@@ -67,15 +108,12 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
     fun toggleRecordingService(context: Context) {
         val intent = Intent(context, RecordingService::class.java)
         if (RecordingService.isRecording) {
-            context.stopService(intent)
-            isServiceRecording = false
+            intent.action = RecordingService.ACTION_STOP
+            context.startService(intent)
         } else {
             context.startService(intent)
-            isServiceRecording = true
         }
     }
-
-    // --- Player Logic ---
 
     fun onPlayPauseClicked(recording: Recording) {
         val currentState = _playerState.value
@@ -88,14 +126,12 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
 
     private fun startPlayback(recording: Recording) {
         if (_playerState.value.playingRecordingId != recording.id) {
-            stopPlayback() // Stop previous track
+            stopPlayback()
             mediaPlayer = MediaPlayer().apply {
                 try {
                     setDataSource(recording.filePath)
                     prepare()
-                    setOnCompletionListener {
-                        stopPlayback()
-                    }
+                    setOnCompletionListener { stopPlayback() }
                 } catch (e: Exception) {
                     e.printStackTrace()
                     stopPlayback()
@@ -125,7 +161,7 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
     fun stopPlayback() {
         mediaPlayer?.release()
         mediaPlayer = null
-        _playerState.value = PlayerState() // Reset state
+        _playerState.value = PlayerState()
         stopUpdatingProgress()
     }
 
@@ -151,7 +187,7 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private fun startUpdatingProgress() {
-        stopUpdatingProgress() // Ensure only one job runs
+        stopUpdatingProgress()
         progressUpdateJob = viewModelScope.launch(Dispatchers.IO) {
             while (_playerState.value.isPlaying) {
                 mediaPlayer?.let {
@@ -166,8 +202,6 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
         progressUpdateJob?.cancel()
         progressUpdateJob = null
     }
-
-    // --- Item Actions ---
 
     fun renameRecording(context: Context, recording: Recording) {
         stopPlayback()
@@ -213,22 +247,25 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun transcribeRecording(context: Context, recording: Recording) {
-        Toast.makeText(context, "Starting transcription... this may take a while.", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, "Starting transcription... this may take a while.", Toast.LENGTH_LONG).show()
         viewModelScope.launch(Dispatchers.IO) {
             val language = SettingsManager.asrLanguage
-            val decoder = SettingsManager.asrDecoder
 
-            val transcript = try {
-                if (decoder == "rnnt") {
-                    asrService.transcribeRnnt(recording.filePath, language)
+            val finalTranscript = try {
+                val segments = transcriptionOrchestrator.transcribe(recording.filePath, language)
+                if (segments.isNotEmpty()) {
+                    segments.joinToString("\n") { segment ->
+                        "Speaker ${segment.speakerId}: ${segment.text}"
+                    }
                 } else {
-                    asrService.transcribeCtc(recording.filePath, language)
+                    "No speech detected or transcription failed."
                 }
             } catch (e: Exception) {
+                Log.e("RecordingsViewModel", "Transcription failed", e)
                 "[Transcription Failed: ${e.message}]"
             }
 
-            recording.transcript = transcript
+            recording.transcript = finalTranscript
             recording.isProcessed = true
             recordingDao.update(recording)
 
@@ -238,9 +275,11 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+
     override fun onCleared() {
         super.onCleared()
         stopPlayback()
-        asrService.close()
+        transcriptionOrchestrator.close()
+        getApplication<Application>().let { unbindService(it) }
     }
 }

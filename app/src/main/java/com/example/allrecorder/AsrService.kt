@@ -711,22 +711,32 @@ class AsrService(private val context: Context) {
         // 1. Load the full audio file ONCE.
         val fullAudio = readAudioFile(filePath)
         if (fullAudio.isEmpty()) return "[Error: Audio file empty or unreadable]"
+        return transcribeCtc(fullAudio, language)
+    }
+
+    /**
+     * Overloaded version of transcribeCtc that accepts a FloatArray directly.
+     * This is more efficient as it avoids writing/reading temporary files.
+     */
+    suspend fun transcribeCtc(audioData: FloatArray, language: String): String {
+        if (!ensureCtcModelsLoaded()) return "[Error: CTC Models could not be loaded]"
+        if (audioData.isEmpty()) return "[Error: Audio data is empty]"
 
         val finalTranscript = StringBuilder()
         var currentPosition = 0 // This marks the start of the *new* audio
 
-        Log.i(TAG, "Starting CTC chunked transcription... File samples: ${fullAudio.size}")
+        Log.i(TAG, "Starting CTC chunked transcription... File samples: ${audioData.size}")
 
-        while (currentPosition < fullAudio.size) {
+        while (currentPosition < audioData.size) {
 
             // --- START OF OVERLAP CHUNK LOGIC ---
             // Start of the chunk (include overlap)
             val chunkStart = max(0, currentPosition - CHUNK_OVERLAP_IN_SAMPLES)
             // End of the chunk
-            val chunkEnd = min(fullAudio.size, currentPosition + MAIN_CHUNK_IN_SAMPLES)
+            val chunkEnd = min(audioData.size, currentPosition + MAIN_CHUNK_IN_SAMPLES)
 
             // Get the audio slice
-            val chunk = fullAudio.sliceArray(chunkStart until chunkEnd)
+            val chunk = audioData.sliceArray(chunkStart until chunkEnd)
 
             Log.d(TAG, "Processing chunk: samples $chunkStart to $chunkEnd")
 

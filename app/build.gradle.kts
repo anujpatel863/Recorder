@@ -1,7 +1,7 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
-    id("kotlin-kapt")
+    alias(libs.plugins.ksp)
     alias(libs.plugins.compose.compiler)
 }
 
@@ -34,6 +34,7 @@ android {
     }
     kotlinOptions {
         jvmTarget = "11"
+        languageVersion = "1.9"
     }
     buildFeatures {
         viewBinding = true
@@ -43,7 +44,6 @@ android {
         kotlinCompilerExtensionVersion = "1.9.4"
     }
 }
-// In app/build.gradle.kts
 
 dependencies {
 
@@ -83,13 +83,14 @@ dependencies {
     // --- Database & Worker ---
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
-    kapt(libs.androidx.room.compiler)
+    ksp(libs.androidx.room.compiler)
     implementation(libs.androidx.work.runtime.ktx)
 
     // --- Coroutines ---
     implementation(libs.kotlinx.coroutines.android)
 
     // --- ML Libs ---
+    implementation("com.github.gkonovalov.android-vad:silero:2.0.10")
     implementation(libs.tensorflow.lite)
     implementation(libs.tensorflow.lite.support)
     implementation(libs.onnxruntime.android)

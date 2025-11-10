@@ -6,7 +6,7 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 
 // Add Conversation::class back to the entities array
-@Database(entities = [Recording::class, Conversation::class], version = 2, exportSchema = false)
+@Database(entities = [Recording::class, Conversation::class], version = 3, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
 
     abstract fun recordingDao(): RecordingDao
