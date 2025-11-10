@@ -43,6 +43,15 @@ android {
     composeOptions {
         kotlinCompilerExtensionVersion = "1.9.4"
     }
+    packaging {
+        jniLibs {
+            // In case of duplicate .so files, pick the first one found.
+            pickFirsts += "lib/arm64-v8a/libonnxruntime.so"
+            pickFirsts += "lib/armeabi-v7a/libonnxruntime.so"
+            pickFirsts += "lib/x86/libonnxruntime.so"
+            pickFirsts += "lib/x86_64/libonnxruntime.so"
+        }
+    }
 }
 
 dependencies {
@@ -72,13 +81,9 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.navigation.compose)
 
-    // --- XML libs (No longer needed for full migration) ---
-    // Keep 'material' for now, as it's used for the XML theme migration
+
     implementation(libs.material)
-    // implementation(libs.androidx.appcompat) // Removed
-    // implementation(libs.androidx.constraintlayout) // Removed
-    // implementation(libs.androidx.viewpager2) // Removed
-    // implementation(libs.androidx.fragment.ktx) // Removed
+
 
     // --- Database & Worker ---
     implementation(libs.androidx.room.runtime)
@@ -88,12 +93,13 @@ dependencies {
 
     // --- Coroutines ---
     implementation(libs.kotlinx.coroutines.android)
+    implementation(files("libs/sherpa-onnx-1.12.15.aar"))
 
     // --- ML Libs ---
     implementation("com.github.gkonovalov.android-vad:silero:2.0.10")
     implementation(libs.tensorflow.lite)
     implementation(libs.tensorflow.lite.support)
-    implementation(libs.onnxruntime.android)
+//    implementation(libs.onnxruntime.android)
     implementation(libs.pytorch.android)
     implementation(libs.pytorch.android.torchvision)
     implementation(libs.jtransforms)

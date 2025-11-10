@@ -98,7 +98,7 @@ class ConversationDetailViewModel(application: Application, private val conversa
             _transcript.value = emptyList()
             try {
                 transcriptionOrchestrator = TranscriptionOrchestrator(getApplication())
-                val result = transcriptionOrchestrator!!.transcribe(firstRecordingFilePath, language) // MODIFIED
+                val result = transcriptionOrchestrator!!.transcribe(firstRecordingFilePath, language, modelName = "tiny") // MODIFIED
                 _transcript.value = result
                 saveTranscriptToDatabase(result)
                 _transcriptionStatus.value = TranscriptionStatus.DONE

@@ -6,36 +6,40 @@ import androidx.preference.PreferenceManager
 
 object SettingsManager {
 
-    // --- START OF CHANGE ---
-    // Make prefs accessible to MainActivity
     lateinit var prefs: SharedPreferences
-    // --- END OF CHANGE ---
 
-    private const val DIARIZATION_MODEL_KEY = "diarization_model"
+    // --- Keys ---
     private const val CHUNK_DURATION_KEY = "chunk_duration"
-    private const val SILENCE_SENSITIVITY_KEY = "silence_sensitivity"
-    private const val SPEAKER_STRICTNESS_KEY = "speaker_strictness"
     private const val ASR_LANGUAGE_KEY = "asr_language"
-    private const val ASR_DECODER_KEY = "asr_decoder"
+    private const val ASR_MODEL_KEY = "asr_model"
+    private const val ASR_ENHANCEMENT_KEY = "asr_enhancement"
 
     fun init(context: Context) {
         prefs = PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
     }
 
-    val selectedDiarizationModel: String
-        get() = prefs.getString(DIARIZATION_MODEL_KEY, "conformer_tisid_medium.tflite") ?: "conformer_tisid_medium.tflite"
+    // --- Getters ---
 
+    /**
+     * Recording chunk duration in milliseconds.
+     * Default: -1L (Continuous recording)
+     */
     val chunkDurationMillis: Long
         get() = prefs.getString(CHUNK_DURATION_KEY, "-1")?.toLong() ?: -1L
-    val silenceSensitivitySeconds: Int
-        get() = prefs.getInt(SILENCE_SENSITIVITY_KEY, 10)
 
-    // SeekBarPreference saves as int, so we retrieve int and convert to float for the worker
-    val speakerStrictnessThreshold: Float
-        get() = prefs.getInt(SPEAKER_STRICTNESS_KEY, 85) / 100.0f
+    /**
+     * ASR language code (e.g., "en", "hi", "gu").
+     * Default: "" (Empty string for auto-detection)
+     */
     val asrLanguage: String
-        get() = prefs.getString(ASR_LANGUAGE_KEY, "gu") ?: "gu"
+        get() = prefs.getString(ASR_LANGUAGE_KEY, "") ?: ""
 
-    val asrDecoder: String
-        get() = prefs.getString(ASR_DECODER_KEY, "ctc") ?: "ctc"
+    /**
+     * ASR model name (e.g., "tiny", "base", "small").
+     * Default: "tiny"
+     */
+    val asrModel: String
+        get() = prefs.getString(ASR_MODEL_KEY, "tiny") ?: "tiny"
+    val asrEnhancementEnabled: Boolean // NEW
+        get() = prefs.getBoolean(ASR_ENHANCEMENT_KEY, false)
 }

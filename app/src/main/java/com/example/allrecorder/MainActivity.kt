@@ -183,12 +183,11 @@ class MainActivity : ComponentActivity() {
     private fun SettingsDrawerContent(onClose: () -> Unit) {
         // State for managing dialog visibility
         var showChunkDialog by remember { mutableStateOf(false) }
-        var showDiarizationDialog by remember { mutableStateOf(false) }
-        var showSilenceDialog by remember { mutableStateOf(false) }
-        var showStrictnessDialog by remember { mutableStateOf(false) }
         var showLanguageDialog by remember { mutableStateOf(false) }
-        var showDecoderDialog by remember { mutableStateOf(false) }
-
+        var showAsrModelDialog by remember { mutableStateOf(false) } // Renamed from showDecoderDialog
+        var asrEnhancementEnabled by remember {
+            mutableStateOf(SettingsManager.asrEnhancementEnabled)
+        }
         ModalDrawerSheet(windowInsets = WindowInsets.systemBars) {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 Spacer(Modifier.height(12.dp))
@@ -202,25 +201,6 @@ class MainActivity : ComponentActivity() {
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
-                Text("Processing", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
-                NavigationDrawerItem(
-                    label = { Text("Diarization Model") },
-                    selected = false,
-                    onClick = { showDiarizationDialog = true }
-                )
-                NavigationDrawerItem(
-                    label = { Text("Silence Sensitivity") },
-                    selected = false,
-                    onClick = { showSilenceDialog = true }
-                )
-                NavigationDrawerItem(
-                    label = { Text("Speaker Detection Strictness") },
-                    selected = false,
-                    onClick = { showStrictnessDialog = true }
-                )
-
-                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-
                 Text("Transcription (ASR)", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
                 NavigationDrawerItem(
                     label = { Text("Transcription Language") },
@@ -228,9 +208,31 @@ class MainActivity : ComponentActivity() {
                     onClick = { showLanguageDialog = true }
                 )
                 NavigationDrawerItem(
-                    label = { Text("Decoder Type") },
+                    // Renamed from "Decoder Type"
+                    label = { Text("ASR Model") },
                     selected = false,
-                    onClick = { showDecoderDialog = true }
+                    onClick = { showAsrModelDialog = true } // Updated
+                )
+                NavigationDrawerItem(
+                    label = { Text("Noise Reduction") },
+                    selected = false,
+                    badge = {
+                        Switch(
+                            checked = asrEnhancementEnabled,
+                            onCheckedChange = null // Click is handled by the item
+                        )
+                    },
+                    onClick = {
+
+                        val newValue = !asrEnhancementEnabled
+
+
+                        SettingsManager.prefs.edit { putBoolean("asr_enhancement", newValue) }
+
+
+                        asrEnhancementEnabled = newValue
+
+                    }
                 )
             }
         }
@@ -245,15 +247,6 @@ class MainActivity : ComponentActivity() {
                 onDismiss = { showChunkDialog = false }
             )
         }
-        if (showDiarizationDialog) {
-            ListPreferenceDialog(
-                key = "diarization_model",
-                title = "Diarization Model",
-                entriesResId = R.array.diarization_model_entries,
-                entryValuesResId = R.array.diarization_model_values,
-                onDismiss = { showDiarizationDialog = false }
-            )
-        }
         if (showLanguageDialog) {
             ListPreferenceDialog(
                 key = "asr_language",
@@ -263,29 +256,14 @@ class MainActivity : ComponentActivity() {
                 onDismiss = { showLanguageDialog = false }
             )
         }
-        if (showDecoderDialog) {
+        // Renamed and updated for ASR Model
+        if (showAsrModelDialog) {
             ListPreferenceDialog(
-                key = "asr_decoder",
-                title = "Decoder Type",
-                entriesResId = R.array.asr_decoder_entries,
-                entryValuesResId = R.array.asr_decoder_values,
-                onDismiss = { showDecoderDialog = false }
-            )
-        }
-        if (showSilenceDialog) {
-            SeekBarPreferenceDialog(
-                key = "silence_sensitivity",
-                title = "Silence Sensitivity",
-                min = 3, max = 30, default = 10,
-                onDismiss = { showSilenceDialog = false }
-            )
-        }
-        if (showStrictnessDialog) {
-            SeekBarPreferenceDialog(
-                key = "speaker_strictness",
-                title = "Speaker Detection Strictness",
-                min = 70, max = 95, default = 85,
-                onDismiss = { showStrictnessDialog = false }
+                key = "asr_model", // NEW KEY
+                title = "ASR Model",
+                entriesResId = R.array.asr_model_entries,   // You must create this in strings.xml
+                entryValuesResId = R.array.asr_model_values, // You must create this in strings.xml
+                onDismiss = { showAsrModelDialog = false }
             )
         }
     }
@@ -300,7 +278,16 @@ class MainActivity : ComponentActivity() {
     ) {
         val entries = resources.getStringArray(entriesResId)
         val entryValues = resources.getStringArray(entryValuesResId)
-        val currentValue = SettingsManager.prefs.getString(key, entryValues[0])
+
+        // Get the default value from SettingsManager to ensure consistency
+        val defaultManagedValue = when(key) {
+            "chunk_duration" -> SettingsManager.chunkDurationMillis.toString()
+            "asr_language" -> SettingsManager.asrLanguage
+            "asr_model" -> SettingsManager.asrModel
+            else -> entryValues.firstOrNull() ?: ""
+        }
+
+        val currentValue = SettingsManager.prefs.getString(key, defaultManagedValue)
         val (selected, setSelected) = remember { mutableStateOf(currentValue) }
 
         AlertDialog(
@@ -309,18 +296,20 @@ class MainActivity : ComponentActivity() {
             text = {
                 Column {
                     entries.forEachIndexed { index, entry ->
-                        val value = entryValues[index]
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            RadioButton(
-                                selected = (selected == value),
-                                onClick = { setSelected(value) }
-                            )
-                            Text(text = entry, modifier = Modifier.padding(start = 8.dp))
+                        if (index < entryValues.size) { // Safe guard
+                            val value = entryValues[index]
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = (selected == value),
+                                    onClick = { setSelected(value) }
+                                )
+                                Text(text = entry, modifier = Modifier.padding(start = 8.dp))
+                            }
                         }
                     }
                 }
@@ -343,49 +332,7 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    @Composable
-    private fun SeekBarPreferenceDialog(
-        key: String,
-        title: String,
-        min: Int,
-        max: Int,
-        default: Int,
-        onDismiss: () -> Unit
-    ) {
-        val currentValue = SettingsManager.prefs.getInt(key, default)
-        var sliderValue by remember { mutableStateOf(currentValue) }
-
-        AlertDialog(
-            onDismissRequest = onDismiss,
-            title = { Text(title) },
-            text = {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(sliderValue.toString(), fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                    Slider(
-                        value = sliderValue.toFloat(),
-                        onValueChange = { sliderValue = it.toInt() },
-                        valueRange = min.toFloat()..max.toFloat(),
-                        steps = (max - min) - 1
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        SettingsManager.prefs.edit { putInt(key, sliderValue) }
-                        onDismiss()
-                    }
-                ) {
-                    Text("Set")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = onDismiss) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
+    // --- SeekBarPreferenceDialog (Removed as it's no longer used) ---
 
     // --- Permission Handling ---
     private fun hasPermissions(): Boolean {

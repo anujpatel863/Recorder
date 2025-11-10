@@ -1,14 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string-array name="diarization_model_entries">
-        <item>High Accuracy</item>
-        <item>High Speed</item>
-    </string-array>
 
-    <string-array name="diarization_model_values">
-        <item>conformer_tisid_medium.tflite</item>
-        <item>conformer_tisid_small.tflite</item>
-    </string-array>
 
     <string-array name="chunk_duration_entries">
         <item>5 Seconds</item>
@@ -34,21 +26,26 @@
         <item>Gujarati</item>
         <item>Hindi</item>
         <item>English</item>
+        <item>Auto Detect</item>
+
     </string-array>
 
     <string-array name="asr_language_values">
         <item>gu</item>
         <item>hi</item>
         <item>en</item>
+        <item>""</item>
+    </string-array>
+    <string-array name="asr_model_entries">
+        <item>Tiny (Fastest, Low Accuracy)</item>
+        <item>Base (Fast, OK Accuracy)</item>
+        <item>Small (Slow, Good Accuracy)</item>
     </string-array>
 
-    <string-array name="asr_decoder_entries">
-        <item>CTC (Fast)</item>
-        <item>RNN-T (High Quality)</item>
+    <string-array name="asr_model_values">
+        <item>tiny</item>
+        <item>base</item>
+        <item>small</item>
     </string-array>
 
-    <string-array name="asr_decoder_values">
-        <item>ctc</item>
-        <item>rnnt</item>
-    </string-array>
 </resources>

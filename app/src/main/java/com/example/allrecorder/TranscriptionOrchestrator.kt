@@ -1,139 +1,511 @@
 package com.example.allrecorder
 
-import android.content.Context
+import android.app.Application
 import android.util.Log
+import com.k2fsa.sherpa.onnx.*
 import java.io.File
 import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
+// This is the data class your ViewModels expect.
 data class FinalTranscriptSegment(
     val speakerId: Int,
-    val startTimeMs: Long,
-    val endTimeMs: Long,
+    val start: Float,
+    val end: Float,
     val text: String
 )
 
-class TranscriptionOrchestrator(private val context: Context) {
+class TranscriptionOrchestrator(private val application: Application) {
 
-    private val vadService = VADService(context)
-    private val diarizationService = DiarizationService(context)
-    private val asrService = AsrService(context)
+    private var offlineRecognizer: OfflineRecognizer? = null
+    private var speakerDiarization: OfflineSpeakerDiarization? = null
+    private var currentAsrLanguage: String = ""
+    private var currentAsrModel: String = ""
+    private val asrModelPaths = mutableMapOf<String, AsrModelPaths>()
+    private var whisperTokensPath: String = ""
+    private var speechEnhancer: OfflineSpeechDenoiser? = null
+    private var speechEnhancerPath: String = ""
+    private data class AsrModelPaths(val encoder: String, val decoder: String)
 
     companion object {
-        private const val TAG = "TranscriptionOrchestrator"
+        private const val TAG = "TranscriptionOrch"
+        private const val MODEL_DIR = "sherpa_models"
+        private const val SAMPLE_RATE = 16000
     }
 
-    suspend fun transcribe(filePath: String, language: String): List<FinalTranscriptSegment> {
-        Log.i(TAG, "Starting full transcription process for: $filePath")
+    init {
+        Log.i(TAG, "TranscriptionOrchestrator init block STARTED.")
+        try {
+            // --- First checkpoint ---
+            Log.i(TAG, "init: Calling copyAssetsToCache()...")
+            copyAssetsToCache()
+            Log.i(TAG, "init: copyAssetsToCache() FINISHED.")
 
-        // 1. Read Audio File
-        val audioData = readAudioFile(filePath)
-        if (audioData.isEmpty()) {
-            Log.e(TAG, "Audio data is empty. Aborting.")
-            return emptyList()
+            // --- Second checkpoint ---
+            Log.i(TAG, "init: Calling loadModels()...")
+            loadModels()
+            Log.i(TAG, "init: loadModels() FINISHED.")
+
+        } catch (t: Throwable) {
+            // This will catch *everything*, including Errors, not just Exceptions
+            Log.e(TAG, "CRITICAL_INIT_FAILURE: A fatal error occurred during init.", t)
         }
 
-        // 2. Voice Activity Detection
-        Log.d(TAG, "Step 1: Performing Voice Activity Detection.")
-        val speechSegments = vadService.getSpeechSegments(audioData)
-        if (speechSegments.isEmpty()) {
-            Log.w(TAG, "No speech segments detected. Aborting.")
-            return emptyList()
+        // --- Final checkpoint ---
+        if (offlineRecognizer == null) {
+            Log.e(TAG, "init: COMPLETED, but offlineRecognizer is STILL NULL.")
+        }
+        if (speakerDiarization == null) {
+            Log.e(TAG, "init: COMPLETED, but speakerDiarization is STILL NULL.")
+        }
+        Log.i(TAG, "TranscriptionOrchestrator init block COMPLETED.")
+    }
+
+    private fun loadModels() {
+        Log.i(TAG, "Loading Sherpa-Onnx models...")
+
+        // --- 1. Configure and load Speaker Diarization (Unchanged) ---
+        try {
+            Log.i(TAG, "Attempting to load Speaker Diarization models...")
+            val pyannoteConfig = OfflineSpeakerSegmentationPyannoteModelConfig(
+                model = getAssetPath("segmentation.onnx")
+            )
+
+            val segmentationConfig = OfflineSpeakerSegmentationModelConfig(
+                pyannote = pyannoteConfig,
+                numThreads = 1
+            )
+
+            val embeddingConfig = SpeakerEmbeddingExtractorConfig(
+                model = getAssetPath("wespeaker_en_voxceleb_resnet34_LM.onnx"),
+                numThreads = 1
+            )
+
+            val clusteringConfig = FastClusteringConfig(
+                numClusters = -1,
+                threshold = 0.5f
+            )
+
+            val diarizationConfig = OfflineSpeakerDiarizationConfig(
+                segmentation = segmentationConfig,
+                embedding = embeddingConfig,
+                clustering = clusteringConfig,
+                minDurationOn = 0.3f,
+                minDurationOff = 0.5f
+            )
+
+            speakerDiarization = OfflineSpeakerDiarization(config = diarizationConfig)
+            Log.i(TAG, "SUCCESS: Speaker Diarization models loaded.")
+
+        } catch (e: Exception) {
+            Log.e(TAG, "CRITICAL_ERROR: Failed to load Speaker Diarization models.", e)
         }
 
-        // 3. Speaker Diarization
-        Log.d(TAG, "Step 2: Performing Speaker Diarization on ${speechSegments.size} segments.")
-        diarizationService.reset() // Ensure state is clean for each run
-        val diarizationResult = diarizationService.process(speechSegments, audioData)
-        if (diarizationResult.isEmpty()) {
-            Log.w(TAG, "Diarization did not return any results. Aborting.")
-            return emptyList()
+        // --- 2. Verify ALL ASR (Whisper) Model Paths ---
+        try {
+            Log.i(TAG, "Verifying ASR (Whisper) model paths...")
+
+            // Get the shared tokens file
+            whisperTokensPath = getAssetPath("whisper-tokens")
+            speechEnhancerPath = getAssetPath("gtcrn_simple.onnx")
+            Log.i(TAG, "Speech enhancer path verified.")
+
+            // --- SYNTAX CHANGED HERE ---
+            // Use .put() to add items to the map
+            asrModelPaths.put("tiny", AsrModelPaths(
+                encoder = getAssetPath("tiny-encoder.int8.onnx"),
+                decoder = getAssetPath("tiny-decoder.int8.onnx")
+            ))
+
+            asrModelPaths.put("base", AsrModelPaths(
+                encoder = getAssetPath("base-encoder.int8.onnx"),
+                decoder = getAssetPath("base-decoder.int8.onnx")
+            ))
+
+            asrModelPaths.put("small", AsrModelPaths(
+                encoder = getAssetPath("small-encoder.int8.onnx"),
+                decoder = getAssetPath("small-decoder.int8.onnx")
+            ))
+
+            Log.i(TAG, "SUCCESS: All ASR (Whisper) model paths verified.")
+        } catch (e: Exception) {
+            // If any file is missing, this will log it.
+            Log.e(TAG, "CRITICAL_ERROR: Failed to find ASR (Whisper) model files.", e)
         }
+    }
+    // --- UPDATED FUNCTION ---
+    /**
+     * Runs noise reduction on a WAV file and saves the result to a new temp file.
+     * @return The path to the new, cleaned-up WAV file, or null on failure.
+     */
+    // --- UPDATED FUNCTION (v3) ---
+    /**
+     * Runs noise reduction on a WAV file and saves the result to a new temp file.
+     * @return The path to the new, cleaned-up WAV file, or null on failure.
+     */
+    fun enhanceAudio(filePath: String): String? {
+        Log.i(TAG, "Starting audio enhancement for $filePath")
 
-        // 4. Transcription
-        Log.d(TAG, "Step 3: Transcribing ${diarizationResult.size} diarized chunks.")
-        val finalTranscript = mutableListOf<FinalTranscriptSegment>()
-        for (result in diarizationResult) {
-            // Use the more efficient method that accepts a FloatArray directly.
-            val transcriptText = asrService.transcribeCtc(result.audioChunk, language)
+        // 1. Lazily initialize the enhancer
+        if (speechEnhancer == null) {
+            try {
+                Log.i(TAG, "Initializing SpeechEnhancer...")
 
-            if (transcriptText.isNotBlank() && !transcriptText.startsWith("[Error")) {
-                finalTranscript.add(
-                    FinalTranscriptSegment(
-                        speakerId = result.speakerId,
-                        startTimeMs = result.segment.start,
-                        endTimeMs = result.segment.end,
-                        text = transcriptText.trim()
-                    )
+                // --- START FIX ---
+                // 1. Create the Gtcrn-specific config with the model path
+                val gtcrnConfig = OfflineSpeechDenoiserGtcrnModelConfig(
+                    model = speechEnhancerPath
                 )
-                Log.d(TAG, "Speaker ${result.speakerId} [${result.segment.start}-${result.segment.end}ms]: $transcriptText")
-            } else {
-                Log.w(TAG, "Skipping empty or error transcription for speaker ${result.speakerId}")
+
+                // 2. Create the inner model config
+                val modelConfig = OfflineSpeechDenoiserModelConfig(
+                    gtcrn = gtcrnConfig,
+                    numThreads = 1,
+                    debug = false,
+                    provider = "cpu"
+                )
+
+                // 3. Create the main denoiser config
+                val config = OfflineSpeechDenoiserConfig(
+                    model = modelConfig
+                )
+                // --- END FIX ---
+
+                speechEnhancer = OfflineSpeechDenoiser(config = config)
+                Log.i(TAG, "SpeechEnhancer initialized.")
+            } catch (e: Exception) {
+                Log.e(TAG, "CRITICAL_ERROR: Failed to initialize SpeechEnhancer.", e)
+                return null
             }
         }
 
-        Log.i(TAG, "Transcription process finished. Generated ${finalTranscript.size} segments.")
-        return mergeConsecutiveSegments(finalTranscript)
+        // 2. Read the audio
+        val audioSamples = readWavFile(filePath)
+        if (audioSamples == null) {
+            Log.e(TAG, "Enhancement failed: Could not read audio file.")
+            return null
+        }
+
+        // 3. Run enhancement
+        try {
+            val denoiser = speechEnhancer ?: return null
+            Log.d(TAG, "Running denoiser...")
+
+            // This is the core enhancement call
+            val denoisedAudio = denoiser.run(samples = audioSamples, sampleRate = SAMPLE_RATE)
+            Log.i(TAG, "Enhancement complete.")
+
+            // 4. Save to a new temp file
+            val tempFile = File.createTempFile("enhanced_", ".wav", application.cacheDir)
+
+            // DenoisedAudio has its own save method
+            denoisedAudio.save(filename = tempFile.absolutePath)
+
+            Log.i(TAG, "Enhanced audio saved to: ${tempFile.absolutePath}")
+            return tempFile.absolutePath
+
+        } catch (e: Exception) {
+            Log.e(TAG, "CRITICAL_ERROR: Speech enhancement processing failed.", e)
+            return null
+        }
     }
 
-    private fun readAudioFile(filePath: String): FloatArray {
-        val file = File(filePath)
-        if (!file.exists()) {
-            Log.e(TAG, "Audio file not found: $filePath")
-            return FloatArray(0)
+
+    fun transcribe(filePath: String, language: String, modelName: String): List<FinalTranscriptSegment> {
+        // --- START NEW ASR LOADER BLOCK ---
+
+        // Check if the language is different or if the recognizer was never created
+        if (modelName != currentAsrModel || language != currentAsrLanguage || offlineRecognizer == null) {
+            Log.i(TAG, "Config change detected: Model '$currentAsrModel' -> '$modelName', Lang '$currentAsrLanguage' -> '$language'.")
+            Log.i(TAG, "Re-initializing ASR recognizer...")
+
+            // Release the old one if it exists
+            offlineRecognizer?.release()
+
+            // Get the paths for the requested model
+            val modelPaths = asrModelPaths[modelName] ?: run {
+                Log.e(TAG, "CRITICAL_ERROR: No paths found for model '$modelName'. Aborting.")
+                return emptyList()
+            }
+
+            try {
+                // 1. Create the new Whisper-specific config
+                val whisperConfig = OfflineWhisperModelConfig(
+                    encoder = modelPaths.encoder, // <-- Use path from map
+                    decoder = modelPaths.decoder, // <-- Use path from map
+                    language = language,
+                    task = "transcribe"
+                )
+
+                // 2. Create the main model config
+                val modelConfig = OfflineModelConfig(
+                    whisper = whisperConfig,
+                    tokens = whisperTokensPath,
+                    numThreads = 2,
+                    debug = false,
+                    provider = "cpu"
+                )
+
+                // 3. Create the final recognizer config
+                val offlineConfig = OfflineRecognizerConfig(
+                    modelConfig = modelConfig,
+                    decodingMethod = "greedy_search"
+                )
+
+                // 4. Create and store the new recognizer
+                offlineRecognizer = OfflineRecognizer(config = offlineConfig)
+                currentAsrLanguage = language // Update the current language
+                currentAsrModel = modelName    // Update the current model
+                Log.i(TAG, "SUCCESS: New ASR recognizer created for model '$modelName' / lang '$language'.")
+
+            } catch (e: Exception) {
+                Log.e(TAG, "CRITICAL_ERROR: Failed to create ASR recognizer for '$modelName'/'$language'.", e)
+                offlineRecognizer = null
+                currentAsrLanguage = ""
+                currentAsrModel = ""
+                return emptyList()
+            }
+        }
+        val recognizer = offlineRecognizer ?: run {
+            Log.e(TAG, "Offline recognizer not initialized!")
+            return emptyList()
+        }
+
+        val currentDiarizer = speakerDiarization ?: run {
+            Log.e(TAG, "Speaker Diarizer not initialized!")
+            return emptyList()
+        }
+
+        Log.i(TAG, "Starting transcription for $filePath with language '$language'")
+        val finalSegments = mutableListOf<FinalTranscriptSegment>()
+
+        val audioSamples = readWavFile(filePath)
+        if (audioSamples == null) {
+            Log.e(TAG, "Failed to read audio file.")
+            return emptyList()
         }
 
         try {
-            FileInputStream(file).use { fileStream ->
-                // Skip WAV header
-                fileStream.skip(44)
-                val dataBytes = fileStream.readBytes()
-                val buffer = ByteBuffer.wrap(dataBytes).order(ByteOrder.LITTLE_ENDIAN)
-                val numSamples = dataBytes.size / 2
-                val floatArray = FloatArray(numSamples)
-                for (i in 0 until numSamples) {
-                    floatArray[i] = buffer.short.toFloat() / 32768.0f
+            // --- 1. Perform Speaker Diarization ---
+            Log.d(TAG, "Running diarization... Audio samples: ${audioSamples.size}")
+
+            // FIXED: The 'process' method only takes the FloatArray of samples.
+            // The compiler error about it being "private" was likely because
+            // it couldn't find a public method matching the (wrong) arguments you provided.
+            val segments = currentDiarizer.process(samples = audioSamples)
+
+            Log.i(TAG, "Diarization complete. Found ${segments.size} segments.")
+
+            // --- 2. Perform ASR on each segment ---
+            for (segment in segments) {
+                val startSample = (segment.start * SAMPLE_RATE).toInt()
+                val endSample = (segment.end * SAMPLE_RATE).toInt().coerceAtMost(audioSamples.size)
+
+                if (endSample > startSample) {
+                    val segmentSamples = audioSamples.sliceArray(startSample until endSample)
+
+                    // Create a stream for this segment
+                    val stream = recognizer.createStream()
+                    stream.acceptWaveform(samples = segmentSamples, sampleRate = SAMPLE_RATE)
+                    recognizer.decode(stream)
+                    val result = recognizer.getResult(stream)
+                    val text = result.text.trim()
+
+                    // Release stream
+                    stream.release()
+
+                    if (text.isNotBlank()) {
+                        val finalSegment = FinalTranscriptSegment(
+                            speakerId = segment.speaker,
+                            start = segment.start,
+                            end = segment.end,
+                            text = text
+                        )
+                        finalSegments.add(finalSegment)
+                        Log.d(
+                            TAG,
+                            "Segment: Speaker ${finalSegment.speakerId}, ${finalSegment.text}"
+                        )
+                    }
                 }
-                return floatArray
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to read WAV file for orchestration", e)
-            return FloatArray(0)
+            Log.e(TAG, "Transcription/Diarization failed", e)
+        }
+
+        Log.i(TAG, "Transcription finished. Generated ${finalSegments.size} segments.")
+        return finalSegments
+    }
+
+    /**
+     * Reads a 16kHz, 16-bit PCM mono WAV file and returns it as a FloatArray.
+     * This version is more robust and parses the header to find the 'data' chunk.
+     */
+    private fun readWavFile(filePath: String): FloatArray? {
+        val file = File(filePath)
+        if (!file.exists()) {
+            Log.e(TAG, "WAV file does not exist: $filePath")
+            return null
+        }
+
+        return try {
+            FileInputStream(file).use { fileStream ->
+                val headerBuffer = ByteBuffer.allocate(12).order(ByteOrder.LITTLE_ENDIAN)
+
+                // 1. Read "RIFF", file size, "WAVE"
+                var bytesRead = fileStream.read(headerBuffer.array(), 0, 12)
+                if (bytesRead < 12) {
+                    Log.e(TAG, "File is too small to be a WAV file")
+                    return null
+                }
+
+                // Check for "RIFF" and "WAVE"
+                val riffId = headerBuffer.getInt(0)
+                val waveId = headerBuffer.getInt(8)
+
+                if (riffId != 0x46464952 || waveId != 0x45564157) {
+                    Log.e(
+                        TAG,
+                        "Not a valid RIFF/WAVE file. RIFF: ${riffId.toString(16)}, WAVE: ${
+                            waveId.toString(16)
+                        }"
+                    )
+                    return null
+                }
+
+                // 2. Find the 'data' chunk
+                val chunkHeaderBuffer = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
+                var dataChunkSize = 0
+
+                while (true) {
+                    chunkHeaderBuffer.clear()
+                    bytesRead = fileStream.read(chunkHeaderBuffer.array())
+                    if (bytesRead < 8) {
+                        Log.e(TAG, "Reached end of file without finding 'data' chunk")
+                        return null
+                    }
+
+                    val chunkId = chunkHeaderBuffer.getInt(0)
+                    val chunkSize = chunkHeaderBuffer.getInt(4)
+
+                    if (chunkId == 0x61746164) { // "data" chunk
+                        dataChunkSize = chunkSize
+                        Log.i(TAG, "'data' chunk found. Size: $dataChunkSize bytes")
+                        break
+                    }
+
+                    // Not 'data', skip this chunk's content
+                    val skipped = fileStream.skip(chunkSize.toLong())
+                    if (skipped != chunkSize.toLong()) {
+                        Log.w(TAG, "Could not skip entire chunk")
+                    }
+                }
+
+                // 3. Read the audio data
+                if (dataChunkSize <= 0) {
+                    Log.e(TAG, "Data chunk has no size")
+                    return null
+                }
+
+                val dataBytes = ByteArray(dataChunkSize)
+                bytesRead = fileStream.read(dataBytes)
+
+                if (bytesRead < dataChunkSize) {
+                    Log.w(
+                        TAG,
+                        "Warning: read $bytesRead bytes, but data chunk size was $dataChunkSize"
+                    )
+                }
+
+                // 4. Convert 16-bit PCM bytes to FloatArray
+                val buffer = ByteBuffer.wrap(dataBytes, 0, bytesRead).order(ByteOrder.LITTLE_ENDIAN)
+                val numSamples = bytesRead / 2 // 2 bytes per 16-bit sample
+                val floatArray = FloatArray(numSamples)
+
+                for (i in 0 until numSamples) {
+                    // Normalize to [-1.0, 1.0]
+                    floatArray[i] = buffer.short.toFloat() / 32768.0f
+                }
+
+                Log.i(TAG, "Successfully read WAV file: $numSamples samples")
+                floatArray
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to read WAV file: $filePath", e)
+            null
         }
     }
 
-    private fun mergeConsecutiveSegments(segments: List<FinalTranscriptSegment>): List<FinalTranscriptSegment> {
-        if (segments.isEmpty()) return emptyList()
+    private fun getAssetPath(assetName: String): String {
+        val file = File(application.cacheDir, assetName)
+        if (!file.exists()) {
+            // This new log is crucial
+            Log.e(TAG, "Asset file not found in cache: ${file.absolutePath}")
+            throw RuntimeException("Asset not found in cache: $assetName. Did copyAssetsToCache() run?")
+        }
+        Log.d(TAG, "Asset path verified for: $assetName")
+        return file.absolutePath
+    }
 
-        val merged = mutableListOf<FinalTranscriptSegment>()
-        var current = segments.first()
+    private fun copyAssetsToCache() {
+        val assetManager = application.assets
+        val modelFiles = listOf(
+            // --- Diarization Models ---
+            "segmentation.onnx",
+            "wespeaker_en_voxceleb_resnet34_LM.onnx",
 
-        for (i in 1 until segments.size) {
-            val next = segments[i]
-            if (next.speakerId == current.speakerId) {
-                // Merge text and update end time
-                current = FinalTranscriptSegment(
-                    speakerId = current.speakerId,
-                    startTimeMs = current.startTimeMs,
-                    endTimeMs = next.endTimeMs,
-                    text = "${current.text} ${next.text}"
-                )
-            } else {
-                merged.add(current)
-                current = next
+            // --- Whisper Models ---
+            "whisper-tokens", // Renamed from tiny-tokens
+
+            "tiny-encoder.int8.onnx",
+            "tiny-decoder.int8.onnx",
+
+            "base-encoder.int8.onnx",
+            "base-decoder.int8.onnx",
+
+            "small-encoder.int8.onnx",
+            "small-decoder.int8.onnx",
+            "gtcrn_simple.onnx"
+        )
+
+        Log.i(TAG, "Checking cache for $MODEL_DIR models...")
+        modelFiles.forEach { filename ->
+            val file = File(application.cacheDir, filename)
+            if (file.exists()) {
+                Log.d(TAG, "$filename already in cache.")
+                return@forEach // 'continue' for a forEach loop
+            }
+
+            try {
+                Log.i(TAG, "Copying $filename from assets to cache...")
+                assetManager.open("$MODEL_DIR/$filename").use { inStream ->
+                    FileOutputStream(file).use { outStream ->
+                        inStream.copyTo(outStream)
+                    }
+                }
+                Log.i(TAG, "SUCCESS: Copied $filename to cache.")
+            } catch (e: Exception) {
+                // This is the new, specific error log
+                Log.e(TAG, "CRITICAL_ERROR: Failed to copy $filename from assets/$MODEL_DIR", e)
+                // This is often a FileNotFoundException if the path or filename is wrong
             }
         }
-        merged.add(current) // Add the last segment
-
-        return merged
     }
 
-
+    // Call this from your ViewModel's onCleared() to free resources
+    // Call this from your ViewModel's onCleared() to free resources
     fun close() {
-        vadService.close()
-        diarizationService.close()
-        asrService.close()
-        Log.i(TAG, "TranscriptionOrchestrator and all its services closed.")
+        offlineRecognizer?.release() // This is the important line
+        offlineRecognizer = null
+
+        speakerDiarization?.release()
+        speakerDiarization = null
+
+        speechEnhancer?.release()
+        speechEnhancer = null
+
+        Log.i(TAG, "Sherpa-Onnx models released.")
     }
 }

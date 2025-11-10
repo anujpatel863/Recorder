@@ -33,8 +33,8 @@ import java.io.File
 class RecordingsViewModel(application: Application) : AndroidViewModel(application) {
 
     private val recordingDao: RecordingDao = AppDatabase.getDatabase(application).recordingDao()
-    private val transcriptionOrchestrator = TranscriptionOrchestrator(application)
 
+    private var transcriptionOrchestrator: TranscriptionOrchestrator? = null
     val allRecordings: LiveData<List<Recording>> = recordingDao.getAllRecordings().asLiveData()
 
     var isServiceRecording by mutableStateOf(RecordingService.isRecording)
@@ -76,6 +76,17 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
         Intent(context, RecordingService::class.java).also { intent ->
             context.bindService(intent, connection, Context.BIND_AUTO_CREATE)
         }
+    }
+    private fun getOrchestrator(): TranscriptionOrchestrator {
+        // If it's already created, just return it
+        transcriptionOrchestrator?.let { return it }
+
+        // If not, create it. This will run loadModels()
+        // on the current background thread.
+        Log.i("RecordingsViewModel", "Creating new TranscriptionOrchestrator...")
+        val newOrchestrator = TranscriptionOrchestrator(getApplication())
+        transcriptionOrchestrator = newOrchestrator
+        return newOrchestrator
     }
 
     fun unbindService(context: Context) {
@@ -247,24 +258,71 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun transcribeRecording(context: Context, recording: Recording) {
-        Toast.makeText(context, "Starting transcription... this may take a while.", Toast.LENGTH_LONG).show()
-        viewModelScope.launch(Dispatchers.IO) {
-            val language = SettingsManager.asrLanguage
+        Toast.makeText(context, "Starting transcription...", Toast.LENGTH_LONG).show()
 
-            val finalTranscript = try {
-                val segments = transcriptionOrchestrator.transcribe(recording.filePath, language)
-                if (segments.isNotEmpty()) {
+        viewModelScope.launch(Dispatchers.IO) {
+            // Get settings
+            val language = SettingsManager.asrLanguage
+            val modelName = SettingsManager.asrModel
+            val enhancementEnabled = SettingsManager.asrEnhancementEnabled // NEW
+
+            val orchestrator = getOrchestrator()
+            var pathToTranscribe = recording.filePath // Start with the original path
+            var tempEnhancedFile: File? = null        // To track our temp file
+
+            var finalTranscript: String
+
+            try {
+                // --- NEW ENHANCEMENT STEP ---
+                if (enhancementEnabled) {
+                    launch(Dispatchers.Main) {
+                        Toast.makeText(context, "Reducing noise... (Step 1 of 2)", Toast.LENGTH_SHORT).show()
+                    }
+                    val enhancedPath = orchestrator.enhanceAudio(recording.filePath)
+                    if (enhancedPath != null) {
+                        pathToTranscribe = enhancedPath // Update path to the new clean file
+                        tempEnhancedFile = File(enhancedPath)
+                    } else {
+                        Log.e("RecordingsViewModel", "Enhancement failed, transcribing original.")
+                        launch(Dispatchers.Main) {
+                            Toast.makeText(context, "Noise reduction failed, processing original.", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+                // --- END NEW STEP ---
+
+                // We now use pathToTranscribe, which is either the original or the enhanced file
+                launch(Dispatchers.Main) {
+                    val step = if (enhancementEnabled) "(Step 2 of 2)" else ""
+                    Toast.makeText(context, "Transcribing... $step", Toast.LENGTH_SHORT).show()
+                }
+
+                val segments = orchestrator.transcribe(pathToTranscribe, language, modelName)
+
+                finalTranscript = if (segments.isNotEmpty()) {
                     segments.joinToString("\n") { segment ->
                         "Speaker ${segment.speakerId}: ${segment.text}"
                     }
                 } else {
                     "No speech detected or transcription failed."
                 }
+
             } catch (e: Exception) {
                 Log.e("RecordingsViewModel", "Transcription failed", e)
-                "[Transcription Failed: ${e.message}]"
+                finalTranscript = "[Transcription Failed: ${e.message}]"
+            } finally {
+                // --- NEW CLEANUP STEP ---
+                // CRITICAL: Always delete the temporary enhanced file
+                tempEnhancedFile?.let {
+                    if (it.exists()) {
+                        it.delete()
+                        Log.i("RecordingsViewModel", "Cleaned up temp enhanced file.")
+                    }
+                }
+                // --- END NEW CLEANUP ---
             }
 
+            // Update database
             recording.transcript = finalTranscript
             recording.isProcessed = true
             recordingDao.update(recording)
@@ -279,7 +337,11 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
     override fun onCleared() {
         super.onCleared()
         stopPlayback()
-        transcriptionOrchestrator.close()
+
+        // This is now safe. If it's null, it does nothing.
+        transcriptionOrchestrator?.close()
+        transcriptionOrchestrator = null
+
         getApplication<Application>().let { unbindService(it) }
     }
 }
