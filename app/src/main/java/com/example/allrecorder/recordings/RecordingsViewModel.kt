@@ -16,6 +16,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
+import androidx.lifecycle.MediatorLiveData
 import androidx.lifecycle.asLiveData
 import androidx.lifecycle.viewModelScope
 import com.example.allrecorder.*
@@ -35,7 +36,6 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
     private val recordingDao: RecordingDao = AppDatabase.getDatabase(application).recordingDao()
 
     private var transcriptionOrchestrator: TranscriptionOrchestrator? = null
-    val allRecordings: LiveData<List<Recording>> = recordingDao.getAllRecordings().asLiveData()
 
     var isServiceRecording by mutableStateOf(RecordingService.isRecording)
         private set
@@ -53,7 +53,37 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
 
     private var recordingService: RecordingService? = null
     private var isBound by mutableStateOf(false)
+    private data class TranscriptionProgress(
+        val recordingId: Long? = null,
+        val progress: Float = 0f, // 0.0 to 1.0
+        val message: String = ""
+    )
 
+    /**
+     * This data class is what the UI will observe. It combines the
+     * recording from the database with any live progress state.
+     */
+    data class RecordingUiState(
+        val recording: Recording,
+        // Live progress (0.0 - 1.0)
+        val liveProgress: Float? = null,
+        // Message for live progress
+        val liveMessage: String? = null
+    )
+
+    // Internal state flow to hold the *current* transcription progress
+    private val _transcriptionProgress = MutableStateFlow(TranscriptionProgress())
+
+    // Internal LiveData sources
+    private val _allRecordingsInternal = recordingDao.getAllRecordings().asLiveData()
+    private val _transcriptionProgressLiveData = _transcriptionProgress.asLiveData()
+
+    /**
+     * This is the public LiveData the UI should observe.
+     * It combines the list of all recordings with the live progress
+     * of the item currently being transcribed.
+     */
+    val allRecordings: MediatorLiveData<List<RecordingUiState>> = MediatorLiveData()
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             val binder = service as RecordingService.LocalBinder
@@ -106,12 +136,38 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
     )
 
     init {
+        allRecordings.addSource(_allRecordingsInternal) { recordings ->
+            val progress = _transcriptionProgressLiveData.value ?: TranscriptionProgress()
+            allRecordings.value = combineRecordingAndProgress(recordings, progress)
+        }
+        allRecordings.addSource(_transcriptionProgressLiveData) { progress ->
+            val recordings = _allRecordingsInternal.value ?: emptyList()
+            allRecordings.value = combineRecordingAndProgress(recordings, progress)
+        }
         viewModelScope.launch {
             while(true) {
                 if (isServiceRecording != RecordingService.isRecording) {
                     isServiceRecording = RecordingService.isRecording
                 }
                 delay(500)
+            }
+        }
+    }
+    private fun combineRecordingAndProgress(
+        recordings: List<Recording>,
+        progress: TranscriptionProgress
+    ): List<RecordingUiState> {
+        return recordings.map { rec ->
+            if (rec.id == progress.recordingId) {
+                // This is the item being processed. Attach progress to it.
+                RecordingUiState(
+                    recording = rec,
+                    liveProgress = progress.progress,
+                    liveMessage = progress.message
+                )
+            } else {
+                // This item is not being processed.
+                RecordingUiState(recording = rec)
             }
         }
     }
@@ -257,47 +313,96 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
             .show()
     }
 
+    // --- FUNCTION MODIFIED FOR LIVE PROGRESS ---
     fun transcribeRecording(context: Context, recording: Recording) {
-        Toast.makeText(context, "Starting transcription...", Toast.LENGTH_LONG).show()
+
+        // Don't start a new job if one is already running for this item
+        if (recording.processingStatus == Recording.STATUS_PROCESSING) {
+            Toast.makeText(context, "Already processing...", Toast.LENGTH_SHORT).show()
+            return
+        }
 
         viewModelScope.launch(Dispatchers.IO) {
+            // --- 1. SET "PROCESSING" STATE IN DB ---
+            // This updates the database, which triggers the _allRecordingsInternal LiveData
+            recording.processingStatus = Recording.STATUS_PROCESSING
+            recording.transcript = null // Clear old transcript if any
+            recordingDao.update(recording)
+
+            // --- 2. SET "PROCESSING" STATE IN LIVE FLOW ---
+            // This triggers the _transcriptionProgressLiveData
+            _transcriptionProgress.update {
+                TranscriptionProgress(
+                    recordingId = recording.id,
+                    progress = 0f,
+                    message = "Starting..."
+                )
+            }
+
             // Get settings
             val language = SettingsManager.asrLanguage
             val modelName = SettingsManager.asrModel
-            val enhancementEnabled = SettingsManager.asrEnhancementEnabled // NEW
+            val enhancementEnabled = SettingsManager.asrEnhancementEnabled
 
             val orchestrator = getOrchestrator()
-            var pathToTranscribe = recording.filePath // Start with the original path
-            var tempEnhancedFile: File? = null        // To track our temp file
+            var pathToTranscribe = recording.filePath
+            var tempEnhancedFile: File? = null
 
             var finalTranscript: String
+            var finalStatus: Int
 
             try {
-                // --- NEW ENHANCEMENT STEP ---
                 if (enhancementEnabled) {
-                    launch(Dispatchers.Main) {
-                        Toast.makeText(context, "Reducing noise... (Step 1 of 2)", Toast.LENGTH_SHORT).show()
+                    _transcriptionProgress.update {
+                        it.copy(
+                            message = "Reducing noise... (Step 1 of 2)",
+                            progress = 0.05f // Show a little progress
+                        )
                     }
                     val enhancedPath = orchestrator.enhanceAudio(recording.filePath)
+
                     if (enhancedPath != null) {
-                        pathToTranscribe = enhancedPath // Update path to the new clean file
+                        pathToTranscribe = enhancedPath
                         tempEnhancedFile = File(enhancedPath)
+                        _transcriptionProgress.update {
+                            it.copy(
+                                message = "Noise reduction complete.",
+                                progress = 0.1f // 10% complete
+                            )
+                        }
                     } else {
                         Log.e("RecordingsViewModel", "Enhancement failed, transcribing original.")
-                        launch(Dispatchers.Main) {
-                            Toast.makeText(context, "Noise reduction failed, processing original.", Toast.LENGTH_SHORT).show()
+                        _transcriptionProgress.update {
+                            it.copy(
+                                message = "Enhancement failed.",
+                                progress = 0.1f // Skip to 10%
+                            )
                         }
                     }
+                } else {
+                    // No enhancement, jump to 10%
+                    _transcriptionProgress.update { it.copy(progress = 0.1f) }
                 }
-                // --- END NEW STEP ---
 
-                // We now use pathToTranscribe, which is either the original or the enhanced file
-                launch(Dispatchers.Main) {
+                _transcriptionProgress.update {
                     val step = if (enhancementEnabled) "(Step 2 of 2)" else ""
-                    Toast.makeText(context, "Transcribing... $step", Toast.LENGTH_SHORT).show()
+                    it.copy(message = "Transcribing... $step")
                 }
 
-                val segments = orchestrator.transcribe(pathToTranscribe, language, modelName)
+                // --- 3. CALL ORCHESTRATOR WITH PROGRESS CALLBACK ---
+                val segments = orchestrator.transcribe(
+                    pathToTranscribe,
+                    language,
+                    modelName
+                ) { segmentProgress ->
+                    // This is our callback
+                    // segmentProgress is 0.0 to 1.0
+                    // We map this to our 0.1 (10%) to 1.0 (100%) range
+                    val totalProgress = 0.1f + (segmentProgress * 0.9f)
+                    _transcriptionProgress.update {
+                        it.copy(progress = totalProgress)
+                    }
+                }
 
                 finalTranscript = if (segments.isNotEmpty()) {
                     segments.joinToString("\n") { segment ->
@@ -306,29 +411,37 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
                 } else {
                     "No speech detected or transcription failed."
                 }
+                finalStatus = Recording.STATUS_COMPLETED
 
             } catch (e: Exception) {
                 Log.e("RecordingsViewModel", "Transcription failed", e)
                 finalTranscript = "[Transcription Failed: ${e.message}]"
+                finalStatus = Recording.STATUS_FAILED
             } finally {
-                // --- NEW CLEANUP STEP ---
-                // CRITICAL: Always delete the temporary enhanced file
                 tempEnhancedFile?.let {
                     if (it.exists()) {
                         it.delete()
                         Log.i("RecordingsViewModel", "Cleaned up temp enhanced file.")
                     }
                 }
-                // --- END NEW CLEANUP ---
+
+                // --- 4. CLEAR LIVE PROGRESS STATE ---
+                // This resets the progress bar.
+                _transcriptionProgress.update { TranscriptionProgress() }
             }
 
-            // Update database
+            // --- 5. UPDATE DB WITH FINAL RESULT ---
+            // This updates the DB with the final transcript and status.
             recording.transcript = finalTranscript
-            recording.isProcessed = true
+            recording.processingStatus = finalStatus
             recordingDao.update(recording)
 
             launch(Dispatchers.Main) {
-                Toast.makeText(context, "Transcription complete!", Toast.LENGTH_SHORT).show()
+                if (finalStatus == Recording.STATUS_COMPLETED) {
+                    Toast.makeText(context, "Transcription complete!", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(context, "Transcription failed.", Toast.LENGTH_SHORT).show()
+                }
             }
         }
     }
@@ -338,7 +451,6 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
         super.onCleared()
         stopPlayback()
 
-        // This is now safe. If it's null, it does nothing.
         transcriptionOrchestrator?.close()
         transcriptionOrchestrator = null
 

@@ -5,12 +5,12 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 
-// Add Conversation::class back to the entities array
-@Database(entities = [Recording::class, Conversation::class], version = 3, exportSchema = false)
+// Conversation::class REMOVED from entities
+@Database(entities = [Recording::class], version = 4, exportSchema = false) // Version incremented
 abstract class AppDatabase : RoomDatabase() {
 
     abstract fun recordingDao(): RecordingDao
-    abstract fun conversationDao(): ConversationDao // Add this back
+    // abstract fun conversationDao(): ConversationDao // REMOVED
 
     companion object {
         @Volatile
@@ -23,7 +23,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "recorder_database"
                 )
-                    .fallbackToDestructiveMigration()
+                    .fallbackToDestructiveMigration(dropAllTables = true)// This will handle the schema change
                     .build()
                 INSTANCE = instance
                 instance

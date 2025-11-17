@@ -32,9 +32,8 @@ android {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
-    kotlinOptions {
+    kotlinOptions{
         jvmTarget = "11"
-        languageVersion = "1.9"
     }
     buildFeatures {
         viewBinding = true

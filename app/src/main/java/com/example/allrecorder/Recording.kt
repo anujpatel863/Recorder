@@ -1,21 +1,10 @@
 package com.example.allrecorder
 
 import androidx.room.Entity
-import androidx.room.ForeignKey
-import androidx.room.Index
 import androidx.room.PrimaryKey
 
 @Entity(
-    tableName = "recordings",
-    foreignKeys = [
-        ForeignKey(
-            entity = Conversation::class,
-            parentColumns = ["id"],
-            childColumns = ["conversationId"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ],
-    indices = [Index("conversationId")]
+    tableName = "recordings"
 )
 data class Recording(
     @PrimaryKey(autoGenerate = true)
@@ -23,8 +12,18 @@ data class Recording(
     var filePath: String,
     val startTime: Long, // Unix timestamp in milliseconds
     val duration: Long, // Duration in milliseconds
-    var conversationId: Long? = null,
-    var isProcessed: Boolean = false,
+
+    // This is the new column
+    var processingStatus: Int = 0, // 0 = Not Started, 1 = Processing, 2 = Completed, -1 = Failed
+
     var transcript: String? = null, // Raw transcript
     var speakerLabels: String? = null // JSON string of combined output
-)
+) {
+    // This makes the code easier to read
+    companion object {
+        const val STATUS_NOT_STARTED = 0
+        const val STATUS_PROCESSING = 1
+        const val STATUS_COMPLETED = 2
+        const val STATUS_FAILED = -1
+    }
+}

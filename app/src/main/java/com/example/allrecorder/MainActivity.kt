@@ -9,10 +9,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.systemBars
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -25,8 +23,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -42,7 +38,6 @@ import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
-import com.example.allrecorder.conversations.ConversationsScreen
 import com.example.allrecorder.recordings.RecordingsScreen
 import com.example.allrecorder.ui.theme.AllRecorderTheme
 import com.example.allrecorder.ui.theme.Monospace
@@ -111,19 +106,18 @@ class MainActivity : ComponentActivity() {
         ModalNavigationDrawer(
             drawerState = drawerState,
             drawerContent = {
-                SettingsDrawerContent(onClose = { scope.launch { drawerState.close() } })
+                // --- FIX: Removed unused 'onClose' parameter ---
+                SettingsDrawerContent()
+                // --- END OF FIX ---
             }
         ) {
             MainContent(onOpenDrawer = { scope.launch { drawerState.open() } })
         }
     }
 
-    @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+    @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun MainContent(onOpenDrawer: () -> Unit) {
-        val pagerState = rememberPagerState(pageCount = { 2 })
-        val scope = rememberCoroutineScope()
-        val tabTitles = listOf("Conversations", "Recordings")
 
         Scaffold(
             topBar = {
@@ -143,48 +137,19 @@ class MainActivity : ComponentActivity() {
             }
         ) { paddingValues ->
             Column(modifier = Modifier.padding(paddingValues)) {
-                PrimaryTabRow(
-                    selectedTabIndex = pagerState.currentPage,
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary
-                ) {
-                    tabTitles.forEachIndexed { index, title ->
-                        Tab(
-                            selected = pagerState.currentPage == index,
-                            onClick = { scope.launch { pagerState.animateScrollToPage(index) } },
-                            text = { Text(title, fontFamily = Monospace) }
-                        )
-                    }
-                }
-
-                HorizontalPager(
-                    state = pagerState,
-                    modifier = Modifier.fillMaxSize()
-                ) { page ->
-                    when (page) {
-                        0 -> {
-                            // Get the context within the composable
-                            val context = LocalContext.current
-                            ConversationsScreen(
-                                onConversationClick = { conversationId ->
-                                    val intent = ConversationDetailActivity.newIntent(context, conversationId)
-                                    startActivity(intent)
-                                }
-                            )
-                        }
-                        1 -> RecordingsScreen()
-                    }
-                }
+                RecordingsScreen()
             }
         }
     }
 
+    // --- FIX: Removed unused 'onClose' parameter ---
     @Composable
-    private fun SettingsDrawerContent(onClose: () -> Unit) {
+    private fun SettingsDrawerContent() {
+        // --- END OF FIX ---
         // State for managing dialog visibility
         var showChunkDialog by remember { mutableStateOf(false) }
         var showLanguageDialog by remember { mutableStateOf(false) }
-        var showAsrModelDialog by remember { mutableStateOf(false) } // Renamed from showDecoderDialog
+        var showAsrModelDialog by remember { mutableStateOf(false) }
         var asrEnhancementEnabled by remember {
             mutableStateOf(SettingsManager.asrEnhancementEnabled)
         }
@@ -208,10 +173,9 @@ class MainActivity : ComponentActivity() {
                     onClick = { showLanguageDialog = true }
                 )
                 NavigationDrawerItem(
-                    // Renamed from "Decoder Type"
                     label = { Text("ASR Model") },
                     selected = false,
-                    onClick = { showAsrModelDialog = true } // Updated
+                    onClick = { showAsrModelDialog = true }
                 )
                 NavigationDrawerItem(
                     label = { Text("Noise Reduction") },
@@ -219,16 +183,14 @@ class MainActivity : ComponentActivity() {
                     badge = {
                         Switch(
                             checked = asrEnhancementEnabled,
-                            onCheckedChange = null // Click is handled by the item
+                            onCheckedChange = null
                         )
                     },
                     onClick = {
 
                         val newValue = !asrEnhancementEnabled
 
-
                         SettingsManager.prefs.edit { putBoolean("asr_enhancement", newValue) }
-
 
                         asrEnhancementEnabled = newValue
 
@@ -256,13 +218,12 @@ class MainActivity : ComponentActivity() {
                 onDismiss = { showLanguageDialog = false }
             )
         }
-        // Renamed and updated for ASR Model
         if (showAsrModelDialog) {
             ListPreferenceDialog(
-                key = "asr_model", // NEW KEY
+                key = "asr_model",
                 title = "ASR Model",
-                entriesResId = R.array.asr_model_entries,   // You must create this in strings.xml
-                entryValuesResId = R.array.asr_model_values, // You must create this in strings.xml
+                entriesResId = R.array.asr_model_entries,
+                entryValuesResId = R.array.asr_model_values,
                 onDismiss = { showAsrModelDialog = false }
             )
         }
@@ -279,7 +240,6 @@ class MainActivity : ComponentActivity() {
         val entries = resources.getStringArray(entriesResId)
         val entryValues = resources.getStringArray(entryValuesResId)
 
-        // Get the default value from SettingsManager to ensure consistency
         val defaultManagedValue = when(key) {
             "chunk_duration" -> SettingsManager.chunkDurationMillis.toString()
             "asr_language" -> SettingsManager.asrLanguage
@@ -296,7 +256,7 @@ class MainActivity : ComponentActivity() {
             text = {
                 Column {
                     entries.forEachIndexed { index, entry ->
-                        if (index < entryValues.size) { // Safe guard
+                        if (index < entryValues.size) {
                             val value = entryValues[index]
                             Row(
                                 Modifier
@@ -331,8 +291,6 @@ class MainActivity : ComponentActivity() {
             }
         )
     }
-
-    // --- SeekBarPreferenceDialog (Removed as it's no longer used) ---
 
     // --- Permission Handling ---
     private fun hasPermissions(): Boolean {

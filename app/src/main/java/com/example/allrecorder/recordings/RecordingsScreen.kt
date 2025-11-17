@@ -31,6 +31,7 @@ import java.io.File
 fun RecordingsScreen(
     viewModel: RecordingsViewModel = viewModel()
 ) {
+    // 'recordings' is now of type List<RecordingsViewModel.RecordingUiState>
     val recordings by viewModel.allRecordings.observeAsState(emptyList())
     val playerState by viewModel.playerState.collectAsState()
     val isRecording by remember { derivedStateOf { viewModel.isServiceRecording } }
@@ -50,32 +51,31 @@ fun RecordingsScreen(
             if (isRecording) {
                 AudioVisualizer(audioData = audioData)
             }
-            // In C:/Users/patel/Desktop/allRecorder/app/src/main/java/com/example/allrecorder/recordings/RecordingsScreen.kt
-
 
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(8.dp)
             ) {
-                // Explicitly define the type of 'recording' as 'Recording'
-                items(recordings) { recording: Recording ->
+                // --- 1. MODIFICATION ---
+                // The item is now 'RecordingUiState'
+                items(recordings, key = { it.recording.id }) { uiState: RecordingsViewModel.RecordingUiState ->
                     RecordingItem(
-                        recording = recording,
+                        // Pass the entire uiState object
+                        uiState = uiState,
                         playerState = playerState,
-                        onPlayPause = { viewModel.onPlayPauseClicked(recording) },
+                        // Update callbacks to use uiState.recording
+                        onPlayPause = { viewModel.onPlayPauseClicked(uiState.recording) },
                         onRewind = viewModel::onRewind,
                         onForward = viewModel::onForward,
                         onSeek = viewModel::onSeek,
-                        onRename = { viewModel.renameRecording(context, recording) },
-                        onDelete = { viewModel.deleteRecording(context, recording) },
-                        onTranscribe = { viewModel.transcribeRecording(context, recording) }
+                        onRename = { viewModel.renameRecording(context, uiState.recording) },
+                        onDelete = { viewModel.deleteRecording(context, uiState.recording) },
+                        onTranscribe = { viewModel.transcribeRecording(context, uiState.recording) }
                     )
                 }
                 // Add padding for the button
                 item { Spacer(modifier = Modifier.height(80.dp)) }
             }
-//...
-
         }
 
         Button(
@@ -92,7 +92,9 @@ fun RecordingsScreen(
 
 @Composable
 private fun RecordingItem(
-    recording: Recording,
+    // --- 2. MODIFICATION ---
+    // Parameter is now RecordingUiState
+    uiState: RecordingsViewModel.RecordingUiState,
     playerState: RecordingsViewModel.PlayerState,
     onPlayPause: () -> Unit,
     onRewind: () -> Unit,
@@ -102,6 +104,9 @@ private fun RecordingItem(
     onDelete: () -> Unit,
     onTranscribe: () -> Unit
 ) {
+    // Extract the recording for easier use
+    val recording = uiState.recording
+
     var isExpanded by remember { mutableStateOf(false) }
     val isPlayingThis = playerState.playingRecordingId == recording.id && playerState.isPlaying
     val isExpandedThis = playerState.playingRecordingId == recording.id
@@ -147,19 +152,81 @@ private fun RecordingItem(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            Text(
-                text = recording.transcript ?: (if (recording.isProcessed) "No speech detected." else "Awaiting processing..."),
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = if (isExpanded) Int.MAX_VALUE else 3,
-                overflow = if (isExpanded) TextOverflow.Clip else TextOverflow.Ellipsis,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            // --- 3. MODIFICATION ---
+            // Check for *live* progress first.
+            if (uiState.liveProgress != null) {
+                // Show the LIVE progress bar
+                Column(modifier = Modifier.padding(top = 8.dp)) {
+                    LinearProgressIndicator(
+                        progress = { uiState.liveProgress }, // Use lambda for M3
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        text = uiState.liveMessage ?: "Processing...",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(top = 4.dp),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            } else {
+                // No live progress, fall back to the static status
+                when (recording.processingStatus) {
+                    Recording.STATUS_COMPLETED -> {
+                        Text(
+                            text = recording.transcript ?: "No speech detected.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = if (isExpanded) Int.MAX_VALUE else 3,
+                            overflow = if (isExpanded) TextOverflow.Clip else TextOverflow.Ellipsis,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Recording.STATUS_PROCESSING -> {
+                        // This is now the "fallback" view for a processing
+                        // item that isn't the *currently* active one.
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(top = 8.dp)
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(20.dp))
+                            Text(
+                                "Processing transcription...",
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.padding(start = 8.dp),
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                    Recording.STATUS_FAILED -> {
+                        Text(
+                            text = recording.transcript ?: "Transcription failed.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = if (isExpanded) Int.MAX_VALUE else 3,
+                            overflow = if (isExpanded) TextOverflow.Clip else TextOverflow.Ellipsis,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                    Recording.STATUS_NOT_STARTED -> {
+                        Text(
+                            text = "Awaiting processing...",
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = if (isExpanded) Int.MAX_VALUE else 3,
+                            overflow = if (isExpanded) TextOverflow.Clip else TextOverflow.Ellipsis,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+            // --- END MODIFICATION ---
 
             if (isExpanded) {
                 PlayerControls(
                     isPlaying = isPlayingThis,
-                    currentPosition = if(isExpandedThis) playerState.currentPosition else 0,
+                    currentPosition = if (isExpandedThis) playerState.currentPosition else 0,
                     totalDuration = recording.duration.toInt(),
+                    // Pass the processing status down
+                    // This button logic is now controlled by *both*
+                    // the static status and the live progress.
+                    isTranscribing = recording.processingStatus == Recording.STATUS_PROCESSING,
                     onPlayPause = onPlayPause,
                     onRewind = onRewind,
                     onForward = onForward,
@@ -176,6 +243,7 @@ private fun PlayerControls(
     isPlaying: Boolean,
     currentPosition: Int,
     totalDuration: Int,
+    isTranscribing: Boolean, // Added this
     onPlayPause: () -> Unit,
     onRewind: () -> Unit,
     onForward: () -> Unit,
@@ -215,9 +283,25 @@ private fun PlayerControls(
             IconButton(onClick = onForward) {
                 Icon(painterResource(R.drawable.ic_fast_forward), contentDescription = "Forward 5s")
             }
-            Button(onClick = onTranscribe, shape = MaterialTheme.shapes.small) {
-                Text("Transcribe", fontFamily = Monospace)
+            // --- MODIFIED BUTTON ---
+            Button(
+                onClick = onTranscribe,
+                shape = MaterialTheme.shapes.small,
+                // Disable the button if transcription is in progress
+                enabled = !isTranscribing
+            ) {
+                // Show a progress bar inside the button if processing
+                if (isTranscribing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Text("Transcribe", fontFamily = Monospace)
+                }
             }
+            // --- END MODIFICATION ---
         }
     }
 }

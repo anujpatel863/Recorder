@@ -213,33 +213,33 @@ class TranscriptionOrchestrator(private val application: Application) {
     }
 
 
-    fun transcribe(filePath: String, language: String, modelName: String): List<FinalTranscriptSegment> {
-        // --- START NEW ASR LOADER BLOCK ---
+    // In TranscriptionOrchestrator.kt
 
-        // Check if the language is different or if the recognizer was never created
+    fun transcribe(
+        filePath: String,
+        language: String,
+        modelName: String,
+        // --- 1. ADD onProgress CALLBACK PARAMETER ---
+        onProgress: (Float) -> Unit
+    ): List<FinalTranscriptSegment> {
+
+        // --- (ASR LOADER BLOCK - NO CHANGES) ---
         if (modelName != currentAsrModel || language != currentAsrLanguage || offlineRecognizer == null) {
             Log.i(TAG, "Config change detected: Model '$currentAsrModel' -> '$modelName', Lang '$currentAsrLanguage' -> '$language'.")
             Log.i(TAG, "Re-initializing ASR recognizer...")
 
-            // Release the old one if it exists
             offlineRecognizer?.release()
-
-            // Get the paths for the requested model
             val modelPaths = asrModelPaths[modelName] ?: run {
                 Log.e(TAG, "CRITICAL_ERROR: No paths found for model '$modelName'. Aborting.")
                 return emptyList()
             }
-
             try {
-                // 1. Create the new Whisper-specific config
                 val whisperConfig = OfflineWhisperModelConfig(
-                    encoder = modelPaths.encoder, // <-- Use path from map
-                    decoder = modelPaths.decoder, // <-- Use path from map
+                    encoder = modelPaths.encoder,
+                    decoder = modelPaths.decoder,
                     language = language,
                     task = "transcribe"
                 )
-
-                // 2. Create the main model config
                 val modelConfig = OfflineModelConfig(
                     whisper = whisperConfig,
                     tokens = whisperTokensPath,
@@ -247,19 +247,14 @@ class TranscriptionOrchestrator(private val application: Application) {
                     debug = false,
                     provider = "cpu"
                 )
-
-                // 3. Create the final recognizer config
                 val offlineConfig = OfflineRecognizerConfig(
                     modelConfig = modelConfig,
                     decodingMethod = "greedy_search"
                 )
-
-                // 4. Create and store the new recognizer
                 offlineRecognizer = OfflineRecognizer(config = offlineConfig)
-                currentAsrLanguage = language // Update the current language
-                currentAsrModel = modelName    // Update the current model
+                currentAsrLanguage = language
+                currentAsrModel = modelName
                 Log.i(TAG, "SUCCESS: New ASR recognizer created for model '$modelName' / lang '$language'.")
-
             } catch (e: Exception) {
                 Log.e(TAG, "CRITICAL_ERROR: Failed to create ASR recognizer for '$modelName'/'$language'.", e)
                 offlineRecognizer = null
@@ -268,11 +263,12 @@ class TranscriptionOrchestrator(private val application: Application) {
                 return emptyList()
             }
         }
+        // --- (END OF ASR LOADER BLOCK) ---
+
         val recognizer = offlineRecognizer ?: run {
             Log.e(TAG, "Offline recognizer not initialized!")
             return emptyList()
         }
-
         val currentDiarizer = speakerDiarization ?: run {
             Log.e(TAG, "Speaker Diarizer not initialized!")
             return emptyList()
@@ -290,30 +286,28 @@ class TranscriptionOrchestrator(private val application: Application) {
         try {
             // --- 1. Perform Speaker Diarization ---
             Log.d(TAG, "Running diarization... Audio samples: ${audioSamples.size}")
-
-            // FIXED: The 'process' method only takes the FloatArray of samples.
-            // The compiler error about it being "private" was likely because
-            // it couldn't find a public method matching the (wrong) arguments you provided.
             val segments = currentDiarizer.process(samples = audioSamples)
-
             Log.i(TAG, "Diarization complete. Found ${segments.size} segments.")
 
+            val totalSegments = segments.size.toFloat()
+            if (totalSegments == 0f) {
+                onProgress(1.0f) // No segments, just report 100% done
+                return emptyList()
+            }
+
             // --- 2. Perform ASR on each segment ---
-            for (segment in segments) {
+            segments.forEachIndexed { index, segment ->
                 val startSample = (segment.start * SAMPLE_RATE).toInt()
                 val endSample = (segment.end * SAMPLE_RATE).toInt().coerceAtMost(audioSamples.size)
 
                 if (endSample > startSample) {
                     val segmentSamples = audioSamples.sliceArray(startSample until endSample)
 
-                    // Create a stream for this segment
                     val stream = recognizer.createStream()
                     stream.acceptWaveform(samples = segmentSamples, sampleRate = SAMPLE_RATE)
                     recognizer.decode(stream)
                     val result = recognizer.getResult(stream)
                     val text = result.text.trim()
-
-                    // Release stream
                     stream.release()
 
                     if (text.isNotBlank()) {
@@ -330,15 +324,21 @@ class TranscriptionOrchestrator(private val application: Application) {
                         )
                     }
                 }
+
+                // --- 2. REPORT PROGRESS ---
+                // Calculate progress (0.0 to 1.0)
+                val progress = (index + 1).toFloat() / totalSegments
+                onProgress(progress)
+
             }
         } catch (e: Exception) {
             Log.e(TAG, "Transcription/Diarization failed", e)
+            onProgress(1.0f) // Report complete even on failure to clear the bar
         }
 
         Log.i(TAG, "Transcription finished. Generated ${finalSegments.size} segments.")
         return finalSegments
     }
-
     /**
      * Reads a 16kHz, 16-bit PCM mono WAV file and returns it as a FloatArray.
      * This version is more robust and parses the header to find the 'data' chunk.
@@ -377,7 +377,7 @@ class TranscriptionOrchestrator(private val application: Application) {
 
                 // 2. Find the 'data' chunk
                 val chunkHeaderBuffer = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
-                var dataChunkSize = 0
+                var dataChunkSize: Int
 
                 while (true) {
                     chunkHeaderBuffer.clear()

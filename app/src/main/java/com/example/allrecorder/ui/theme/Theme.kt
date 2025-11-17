@@ -49,15 +49,7 @@ fun AllRecorderTheme(
     // Your app appears to use the same retro theme for both light and dark
     val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
 
-    val view = LocalView.current
-    if (!view.isInEditMode) {
-        SideEffect {
-            val window = (view.context as Activity).window
-            window.statusBarColor = Color.Transparent.toArgb()
-            WindowCompat.setDecorFitsSystemWindows(window, false)
-            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = darkTheme
-        }
-    }
+
 
     MaterialTheme(
         colorScheme = colorScheme,
