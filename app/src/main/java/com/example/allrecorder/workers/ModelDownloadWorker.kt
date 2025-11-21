@@ -20,6 +20,7 @@ import java.io.IOException
 import java.security.DigestInputStream
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
+import android.content.pm.ServiceInfo
 
 class ModelDownloadWorker(
     private val context: Context,
@@ -125,7 +126,16 @@ class ModelDownloadWorker(
             .setProgress(100, progress, progress == 0 && indeterminate)
             .build()
 
-        return ForegroundInfo(notificationId, notification)
+        // FIX: Explicitly provide the foreground service type for Android 14+
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ForegroundInfo(
+                notificationId,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            )
+        } else {
+            ForegroundInfo(notificationId, notification)
+        }
     }
 
     private fun createNotificationChannel() {

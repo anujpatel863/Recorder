@@ -18,7 +18,7 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.livedata.observeAsState
+// import androidx.compose.runtime.livedata.observeAsState // Not needed for StateFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -171,7 +171,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-                Divider()
+                HorizontalDivider()
 
                 Text("Recording", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
                 NavigationDrawerItem(
@@ -199,8 +199,9 @@ class MainActivity : ComponentActivity() {
 
                 // --- 3. Robust Noise Reduction Switch ---
                 val noiseBundle = ModelRegistry.getBundle("bundle_enhancement")!!
-                // Observe the STATE, not just progress
-                val noiseState by modelViewModel.getBundleState(noiseBundle).observeAsState(BundleUiState())
+
+                // FIX 1: Use collectAsState() for StateFlow
+                val noiseState by modelViewModel.getBundleState(noiseBundle).collectAsState()
 
                 NavigationDrawerItem(
                     label = { Text("Noise Reduction") },
@@ -301,8 +302,8 @@ class MainActivity : ComponentActivity() {
                     options.forEach { (key, label, bundleId) ->
                         val bundle = ModelRegistry.getBundle(bundleId)
                         if (bundle != null) {
-                            // Observe ROBUST STATE
-                            val state by viewModel.getBundleState(bundle).observeAsState(BundleUiState())
+                            // FIX 2: Use collectAsState() for StateFlow
+                            val state by viewModel.getBundleState(bundle).collectAsState()
 
                             // Logic: Can select only if fully ready and NOT currently downloading
                             val isSelectable = state.isReady && !state.isDownloading
