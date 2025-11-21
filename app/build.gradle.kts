@@ -107,6 +107,7 @@ dependencies {
     implementation(libs.mediapipe.tasks.text)
     implementation(libs.gson)
     implementation(libs.androidx.preference.ktx)
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     // --- Testing ---
     testImplementation(libs.junit)

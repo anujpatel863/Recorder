@@ -1,7 +1,6 @@
 package com.example.allrecorder.models
 
 import android.content.Context
-import androidx.lifecycle.LiveData
 import androidx.work.*
 import com.example.allrecorder.workers.ModelDownloadWorker
 import java.io.File
@@ -10,25 +9,51 @@ class ModelManager(private val context: Context) {
 
     private val workManager = WorkManager.getInstance(context)
 
+    /**
+     * Checks if a single model file exists and has content.
+     */
     fun isModelReady(spec: ModelSpec): Boolean {
         val file = File(context.filesDir, "models/${spec.fileName}")
-        // Add a minimum size check (e.g. > 1KB) to avoid empty placeholder files
-        return file.exists() && file.length() > 1024
+        return file.exists() && file.length() > 0
     }
 
+    /**
+     * [FIX] This is the function that was missing.
+     * It returns the absolute path to the model file so Mediapipe can load it.
+     */
     fun getModelPath(spec: ModelSpec): String {
         return File(context.filesDir, "models/${spec.fileName}").absolutePath
     }
 
-    fun downloadModel(spec: ModelSpec): LiveData<WorkInfo?> {
+    /**
+     * Checks if ALL models in a bundle are ready.
+     */
+    fun isBundleReady(bundle: ModelBundle): Boolean {
+        return bundle.modelIds.all { id -> isModelReady(ModelRegistry.getSpec(id)) }
+    }
+
+    /**
+     * Downloads all missing files for a bundle.
+     */
+    fun downloadBundle(bundle: ModelBundle) {
+        bundle.modelIds.forEach { modelId ->
+            val spec = ModelRegistry.getSpec(modelId)
+            if (!isModelReady(spec)) {
+                enqueueDownload(spec, bundle.id)
+            }
+        }
+    }
+
+    private fun enqueueDownload(spec: ModelSpec, bundleId: String) {
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
+
         val request = OneTimeWorkRequestBuilder<ModelDownloadWorker>()
             .setInputData(workDataOf("model_id" to spec.id))
-            .setConstraints(
-                Constraints.Builder()
-                    .setRequiredNetworkType(NetworkType.CONNECTED)
-                    .build()
-            )
-            .addTag(spec.id) // Important for tracking progress
+            .setConstraints(constraints)
+            .addTag(spec.id)      // Tag 1: The specific model
+            .addTag(bundleId)     // Tag 2: The bundle (for UI tracking)
             .build()
 
         workManager.enqueueUniqueWork(
@@ -36,52 +61,21 @@ class ModelManager(private val context: Context) {
             ExistingWorkPolicy.KEEP,
             request
         )
-        return workManager.getWorkInfoByIdLiveData(request.id)
-    }
-
-    // --- Bundle Operations ---
-
-    fun isBundleReady(bundle: ModelBundle): Boolean {
-        return bundle.modelIds.all { id -> isModelReady(ModelRegistry.getSpec(id)) }
-    }
-
-    fun downloadBundle(bundle: ModelBundle) {
-        bundle.modelIds.forEach { id ->
-            if (!isModelReady(ModelRegistry.getSpec(id))) {
-                downloadModel(ModelRegistry.getSpec(id))
-            }
-        }
-    }
-
-    fun cancelBundleDownload(bundle: ModelBundle) {
-        bundle.modelIds.forEach { id ->
-            // This stops the worker and triggers the 'isStopped' check in doWork
-            workManager.cancelUniqueWork("download_$id")
-
-            // Also delete the file just in case the worker hadn't started writing yet
-            val spec = ModelRegistry.getSpec(id)
-            val file = File(context.filesDir, "models/${spec.fileName}")
-            if (file.exists()) file.delete()
-        }
     }
 
     fun deleteBundle(bundle: ModelBundle) {
-        // Cancel any active downloads first
-        cancelBundleDownload(bundle)
-        // Delete files
+        // 1. Cancel all workers for this bundle
+        workManager.cancelAllWorkByTag(bundle.id)
+
+        // 2. Delete actual files
         bundle.modelIds.forEach { id ->
             val spec = ModelRegistry.getSpec(id)
             val file = File(context.filesDir, "models/${spec.fileName}")
             if (file.exists()) file.delete()
-        }
-    }
 
-    // Used by UI to observe progress
-    fun getWorkInfosForBundle(bundle: ModelBundle): LiveData<List<WorkInfo>> {
-        // We observe all workers tagged with the model IDs
-        // Note: This is a simplification. Ideally, you'd combine LiveData.
-        // For now, we usually only download one big file per bundle anyway.
-        val firstId = bundle.modelIds.first()
-        return workManager.getWorkInfosByTagLiveData(firstId)
+            // Delete temp files too
+            val temp = File(context.filesDir, "models/${spec.fileName}.tmp")
+            if (temp.exists()) temp.delete()
+        }
     }
 }

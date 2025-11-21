@@ -1,26 +1,48 @@
 package com.example.allrecorder.workers
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Context
-import android.util.Log
+import android.os.Build
+import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
+import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.example.allrecorder.models.ModelRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
+import java.io.IOException
+import java.security.DigestInputStream
+import java.security.MessageDigest
+import java.util.concurrent.TimeUnit
 
 class ModelDownloadWorker(
-    context: Context,
+    private val context: Context,
     params: WorkerParameters
 ) : CoroutineWorker(context, params) {
 
-    override suspend fun doWork(): Result {
-        val modelId = inputData.getString("model_id") ?: return Result.failure()
-        val modelSpec = try { ModelRegistry.getSpec(modelId) } catch (e: Exception) { return Result.failure() }
+    private val client by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .build()
+    }
+
+    private val notificationManager =
+        context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        val modelId = inputData.getString("model_id") ?: return@withContext Result.failure()
+        val modelSpec = try { ModelRegistry.getSpec(modelId) } catch (e: Exception) { return@withContext Result.failure() }
+
+        // Setup Foreground Service
+        createNotificationChannel()
+        setForeground(createForegroundInfo(modelSpec.description, 0, true))
 
         val modelsDir = File(applicationContext.filesDir, "models")
         if (!modelsDir.exists()) modelsDir.mkdirs()
@@ -28,48 +50,92 @@ class ModelDownloadWorker(
         val finalFile = File(modelsDir, modelSpec.fileName)
         val tempFile = File(modelsDir, "${modelSpec.fileName}.tmp")
 
-        return withContext(Dispatchers.IO) {
-            try {
-                val url = URL(modelSpec.url)
-                val connection = url.openConnection() as HttpURLConnection
-                connection.connect()
+        try {
+            val request = Request.Builder().url(modelSpec.url).build()
+            val response = client.newCall(request).execute()
+            if (!response.isSuccessful) throw IOException("Network Error: ${response.code}")
 
-                if (connection.responseCode != HttpURLConnection.HTTP_OK) return@withContext Result.failure()
+            val body = response.body ?: throw IOException("Empty Body")
+            val totalLength = body.contentLength()
+            val digest = MessageDigest.getInstance("SHA-256")
 
-                val fileLength = connection.contentLength
-                val input = connection.inputStream
-                val output = FileOutputStream(tempFile)
+            body.byteStream().use { rawInput ->
+                DigestInputStream(rawInput, digest).use { digestInput ->
+                    FileOutputStream(tempFile).use { output ->
+                        val buffer = ByteArray(8 * 1024)
+                        var bytesCopied: Long = 0
+                        var len: Int
+                        var lastUpdate = 0L
 
-                val data = ByteArray(8192)
-                var total: Long = 0
-                var count: Int
+                        while (digestInput.read(buffer).also { len = it } != -1) {
+                            if (isStopped) {
+                                output.close()
+                                tempFile.delete()
+                                return@withContext Result.failure()
+                            }
+                            output.write(buffer, 0, len)
+                            bytesCopied += len
 
-                while (input.read(data).also { count = it } != -1) {
-                    if (isStopped) {
-                        output.close()
-                        input.close()
-                        tempFile.delete() // Cleanup partial download
-                        return@withContext Result.failure()
-                    }
-                    total += count
-                    output.write(data, 0, count)
-                    if (fileLength > 0) {
-                        setProgress(workDataOf("progress" to ((total * 100) / fileLength).toInt()))
+                            val now = System.currentTimeMillis()
+                            if (totalLength > 0 && (now - lastUpdate > 500)) {
+                                val progress = ((bytesCopied * 100) / totalLength).toInt()
+                                setForeground(createForegroundInfo(modelSpec.description, progress, true))
+                                setProgress(workDataOf("progress" to progress))
+                                lastUpdate = now
+                            }
+                        }
                     }
                 }
-
-                output.flush()
-                output.close()
-                input.close()
-
-                // Atomic Swap
-                if (finalFile.exists()) finalFile.delete()
-                if (tempFile.renameTo(finalFile)) Result.success() else Result.failure()
-
-            } catch (e: Exception) {
-                if (tempFile.exists()) tempFile.delete()
-                Result.retry()
             }
+
+            // Verification
+            if (modelSpec.sha256 != null) {
+                val calculatedHash = digest.digest().joinToString("") { "%02x".format(it) }
+                if (!calculatedHash.equals(modelSpec.sha256, ignoreCase = true)) {
+                    tempFile.delete()
+                    return@withContext Result.failure(workDataOf("error" to "Checksum mismatch"))
+                }
+            }
+
+            if (finalFile.exists()) finalFile.delete()
+            if (tempFile.renameTo(finalFile)) {
+                return@withContext Result.success()
+            } else {
+                return@withContext Result.failure()
+            }
+
+        } catch (e: Exception) {
+            if (tempFile.exists()) tempFile.delete()
+            return@withContext Result.retry()
+        }
+    }
+
+    private fun createForegroundInfo(title: String, progress: Int, indeterminate: Boolean): ForegroundInfo {
+        val id = "model_download_channel"
+        val notificationId = title.hashCode()
+
+        val cancelIntent = androidx.work.WorkManager.getInstance(applicationContext)
+            .createCancelPendingIntent(getId())
+
+        val notification = NotificationCompat.Builder(applicationContext, id)
+            .setContentTitle("Downloading $title")
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setOngoing(true)
+            .addAction(android.R.drawable.ic_delete, "Cancel", cancelIntent)
+            .setProgress(100, progress, progress == 0 && indeterminate)
+            .build()
+
+        return ForegroundInfo(notificationId, notification)
+    }
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                "model_download_channel",
+                "Model Downloads",
+                NotificationManager.IMPORTANCE_LOW
+            )
+            notificationManager.createNotificationChannel(channel)
         }
     }
 }
