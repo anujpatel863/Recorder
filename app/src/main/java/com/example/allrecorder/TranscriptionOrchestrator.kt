@@ -52,12 +52,14 @@ class TranscriptionOrchestrator(private val application: Application) {
                 val segmentationConfig = OfflineSpeakerSegmentationModelConfig(pyannote = pyannoteConfig, numThreads = 1, debug = false)
                 val embeddingConfig = SpeakerEmbeddingExtractorConfig(model = embeddingPath, numThreads = 1, debug = false)
                 val clusteringConfig = FastClusteringConfig(numClusters = -1, threshold = 0.5f)
+
+                // FIX: Restored values from OldTranscriptionOrchestrator (0.3f/0.5f)
                 val diarizationConfig = OfflineSpeakerDiarizationConfig(
                     segmentation = segmentationConfig,
                     embedding = embeddingConfig,
                     clustering = clusteringConfig,
-                    minDurationOn = 0.2f,
-                    minDurationOff = 0.7f
+                    minDurationOn = 0.3f,
+                    minDurationOff = 0.5f
                 )
 
                 speakerDiarization = OfflineSpeakerDiarization(config = diarizationConfig)
@@ -143,7 +145,10 @@ class TranscriptionOrchestrator(private val application: Application) {
         }
 
         val recognizer = offlineRecognizer ?: return emptyList()
+
+        // FIX: This now calls the corrected readWavFile
         val audioSamples = readWavFile(filePath) ?: return emptyList()
+
         val finalSegments = mutableListOf<FinalTranscriptSegment>()
 
         // --- 2. Processing Strategy ---
@@ -204,37 +209,91 @@ class TranscriptionOrchestrator(private val application: Application) {
         return result.text.trim()
     }
 
+    // FIX: COMPLETELY REPLACED WITH THE ROBUST VERSION FROM OLD SCRIPT
     private fun readWavFile(filePath: String): FloatArray? {
         val file = File(filePath)
-        if (!file.exists()) return null
-        try {
+        if (!file.exists()) {
+            Log.e(TAG, "WAV file does not exist: $filePath")
+            return null
+        }
+
+        return try {
             FileInputStream(file).use { fileStream ->
                 val headerBuffer = ByteBuffer.allocate(12).order(ByteOrder.LITTLE_ENDIAN)
-                if (fileStream.read(headerBuffer.array(), 0, 12) < 12) return null
-                val chunkHeader = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
-                var dataChunkSize = 0
+
+                // 1. Read "RIFF", file size, "WAVE"
+                var bytesRead = fileStream.read(headerBuffer.array(), 0, 12)
+                if (bytesRead < 12) {
+                    Log.e(TAG, "File is too small to be a WAV file")
+                    return null
+                }
+
+                // Check for "RIFF" and "WAVE"
+                val riffId = headerBuffer.getInt(0)
+                val waveId = headerBuffer.getInt(8)
+
+                if (riffId != 0x46464952 || waveId != 0x45564157) {
+                    Log.e(TAG,"Not a valid RIFF/WAVE file. RIFF: ${riffId.toString(16)}, WAVE: ${waveId.toString(16)}")
+                    return null
+                }
+
+                // 2. Find the 'data' chunk
+                val chunkHeaderBuffer = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
+                var dataChunkSize: Int
+
                 while (true) {
-                    chunkHeader.clear()
-                    if (fileStream.read(chunkHeader.array()) < 8) break
-                    val id = chunkHeader.getInt(0)
-                    val size = chunkHeader.getInt(4)
-                    if (id == 0x61746164) { // "data"
-                        dataChunkSize = size
+                    chunkHeaderBuffer.clear()
+                    bytesRead = fileStream.read(chunkHeaderBuffer.array())
+                    if (bytesRead < 8) {
+                        Log.e(TAG, "Reached end of file without finding 'data' chunk")
+                        return null
+                    }
+
+                    val chunkId = chunkHeaderBuffer.getInt(0)
+                    val chunkSize = chunkHeaderBuffer.getInt(4)
+
+                    if (chunkId == 0x61746164) { // "data" chunk
+                        dataChunkSize = chunkSize
+                        Log.i(TAG, "'data' chunk found. Size: $dataChunkSize bytes")
                         break
                     }
-                    fileStream.skip(size.toLong())
+
+                    // Not 'data', skip this chunk's content
+                    val skipped = fileStream.skip(chunkSize.toLong())
+                    if (skipped != chunkSize.toLong()) {
+                        Log.w(TAG, "Could not skip entire chunk")
+                    }
                 }
-                if (dataChunkSize <= 0) return null
+
+                // 3. Read the audio data
+                if (dataChunkSize <= 0) {
+                    Log.e(TAG, "Data chunk has no size")
+                    return null
+                }
+
                 val dataBytes = ByteArray(dataChunkSize)
-                val read = fileStream.read(dataBytes)
-                val floats = FloatArray(read / 2)
-                ByteBuffer.wrap(dataBytes, 0, read).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(ShortArray(read / 2).apply {
-                    forEachIndexed { i, s -> floats[i] = s / 32768f }
-                })
-                return floats
+                bytesRead = fileStream.read(dataBytes)
+
+                if (bytesRead < dataChunkSize) {
+                    Log.w(TAG, "Warning: read $bytesRead bytes, but data chunk size was $dataChunkSize")
+                }
+
+                // 4. Convert 16-bit PCM bytes to FloatArray
+                val buffer = ByteBuffer.wrap(dataBytes, 0, bytesRead).order(ByteOrder.LITTLE_ENDIAN)
+                val numSamples = bytesRead / 2 // 2 bytes per 16-bit sample
+                val floatArray = FloatArray(numSamples)
+
+                for (i in 0 until numSamples) {
+                    // Normalize to [-1.0, 1.0]
+                    floatArray[i] = buffer.short.toFloat() / 32768.0f
+                }
+
+                Log.i(TAG, "Successfully read WAV file: $numSamples samples")
+                floatArray
             }
         } catch (e: Exception) {
-            return null
+            Log.e(TAG, "Failed to read WAV file: $filePath", e)
+            null
         }
     }
 

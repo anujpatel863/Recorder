@@ -163,23 +163,30 @@ object ModelRegistry {
     fun getSpec(id: String) = availableModels.first { it.id == id }
     fun getSpecByFileName(name: String) = availableModels.firstOrNull { it.fileName == name }
     val bundles = listOf(
+
         ModelBundle(
             id = "bundle_asr_tiny",
             name = "Tiny Model (Fastest)",
-            description = "Standard English transcription. Approx 40MB.",
+            description = "smallest and fastest, but less accurate. Approx 40MB.",
             modelIds = listOf("tiny_encoder", "tiny_decoder", "whisper_tokens")
         ),
         ModelBundle(
             id = "bundle_asr_base",
-            name = "Base Model (Balanced)",
-            description = "Better accuracy than Tiny. Approx 140MB.",
+            name = "Base Model (less accurate)",
+            description = "Decent English transcription. Approx 140MB.",
             modelIds = listOf("base_encoder", "base_decoder", "whisper_tokens")
         ),
         ModelBundle(
             id = "bundle_asr_small",
-            name = "Small Model (High Accuracy)",
+            name = "Small Model (balanced)",
             description = "Best for clear dictation. Slow on older phones. Approx 400MB.",
             modelIds = listOf("small_encoder", "small_decoder", "whisper_tokens")
+        ),
+        ModelBundle(
+            id = "bundle_asr_medium",
+            name = "medium Model (high accuracy)",
+            description = "Heavy inference time. Slow on older phones. Approx 920MB.",
+            modelIds = listOf("medium_encoder", "medium_decoder", "whisper_tokens")
         ),
         ModelBundle(
             id = "bundle_diarization",
