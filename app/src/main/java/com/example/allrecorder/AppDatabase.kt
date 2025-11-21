@@ -4,9 +4,11 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.TypeConverters
 
 // Conversation::class REMOVED from entities
-@Database(entities = [Recording::class], version = 4, exportSchema = false) // Version incremented
+@Database(entities = [Recording::class], version = 5, exportSchema = false) // Version incremented
+@TypeConverters(Converters::class) // Add this line
 abstract class AppDatabase : RoomDatabase() {
 
     abstract fun recordingDao(): RecordingDao

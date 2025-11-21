@@ -40,12 +40,16 @@
         <item>Tiny (Fastest, Low Accuracy)</item>
         <item>Base (Fast, OK Accuracy)</item>
         <item>Small (Slow, Good Accuracy)</item>
+        <item>medium</item>
+
     </string-array>
 
     <string-array name="asr_model_values">
         <item>tiny</item>
         <item>base</item>
         <item>small</item>
+        <item>medium</item>
+
     </string-array>
 
 </resources>

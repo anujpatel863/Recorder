@@ -104,6 +104,7 @@ dependencies {
     implementation(libs.jtransforms)
 
     // --- Other ---
+    implementation(libs.mediapipe.tasks.text)
     implementation(libs.gson)
     implementation(libs.androidx.preference.ktx)
 

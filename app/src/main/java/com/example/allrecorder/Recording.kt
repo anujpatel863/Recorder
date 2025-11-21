@@ -17,7 +17,8 @@ data class Recording(
     var processingStatus: Int = 0, // 0 = Not Started, 1 = Processing, 2 = Completed, -1 = Failed
 
     var transcript: String? = null, // Raw transcript
-    var speakerLabels: String? = null // JSON string of combined output
+    var speakerLabels: String? = null ,
+    var embedding: List<Float>? = null
 ) {
     // This makes the code easier to read
     companion object {

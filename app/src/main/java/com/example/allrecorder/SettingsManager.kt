@@ -41,5 +41,5 @@ object SettingsManager {
     val asrModel: String
         get() = prefs.getString(ASR_MODEL_KEY, "tiny") ?: "tiny"
     val asrEnhancementEnabled: Boolean // NEW
-        get() = prefs.getBoolean(ASR_ENHANCEMENT_KEY, false)
+        get() = prefs.getBoolean(ASR_ENHANCEMENT_KEY, true)
 }

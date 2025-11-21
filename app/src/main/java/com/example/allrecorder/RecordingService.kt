@@ -144,7 +144,7 @@ class RecordingService : Service() {
 
             val bufferSizeInBytes = bufferSize * 2
             audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
                 sampleRate,
                 channelConfig,
                 audioFormat,

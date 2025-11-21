@@ -10,6 +10,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.livedata.observeAsState
@@ -37,7 +38,11 @@ fun RecordingsScreen(
     val isRecording by remember { derivedStateOf { viewModel.isServiceRecording } }
     val context = LocalContext.current
     val audioData by viewModel.audioData.collectAsState()
+    val searchResults by viewModel.searchResults.collectAsState()
 
+    val recordingsToShow = searchResults ?: recordings
+
+    var searchQuery by remember { mutableStateOf("") }
     // Bind to service when the screen is shown
     DisposableEffect(Unit) {
         viewModel.bindService(context)
@@ -48,6 +53,19 @@ fun RecordingsScreen(
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column {
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = {
+                    searchQuery = it
+                    viewModel.performSemanticSearch(it)
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(8.dp),
+                placeholder = { Text("Search recordings...") },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                singleLine = true
+            )
             if (isRecording) {
                 AudioVisualizer(audioData = audioData)
             }
@@ -58,12 +76,10 @@ fun RecordingsScreen(
             ) {
                 // --- 1. MODIFICATION ---
                 // The item is now 'RecordingUiState'
-                items(recordings, key = { it.recording.id }) { uiState: RecordingsViewModel.RecordingUiState ->
+                items(recordingsToShow, key = { it.recording.id }) { uiState: RecordingsViewModel.RecordingUiState ->
                     RecordingItem(
-                        // Pass the entire uiState object
                         uiState = uiState,
                         playerState = playerState,
-                        // Update callbacks to use uiState.recording
                         onPlayPause = { viewModel.onPlayPauseClicked(uiState.recording) },
                         onRewind = viewModel::onRewind,
                         onForward = viewModel::onForward,
@@ -73,7 +89,6 @@ fun RecordingsScreen(
                         onTranscribe = { viewModel.transcribeRecording(context, uiState.recording) }
                     )
                 }
-                // Add padding for the button
                 item { Spacer(modifier = Modifier.height(80.dp)) }
             }
         }
