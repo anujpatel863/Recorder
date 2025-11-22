@@ -1,5 +1,6 @@
 package com.example.allrecorder.recordings
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -10,18 +11,17 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.allrecorder.R
 import com.example.allrecorder.Recording
 import com.example.allrecorder.formatDuration
@@ -30,20 +30,17 @@ import java.io.File
 
 @Composable
 fun RecordingsScreen(
-    viewModel: RecordingsViewModel = viewModel()
+    viewModel: RecordingsViewModel
 ) {
-    // 'recordings' is now of type List<RecordingsViewModel.RecordingUiState>
     val recordings by viewModel.allRecordings.observeAsState(emptyList())
     val playerState by viewModel.playerState.collectAsState()
     val isRecording by remember { derivedStateOf { viewModel.isServiceRecording } }
     val context = LocalContext.current
-    val audioData by viewModel.audioData.collectAsState()
     val searchResults by viewModel.searchResults.collectAsState()
 
+    // If searchResults is null, use all recordings
     val recordingsToShow = searchResults ?: recordings
 
-    var searchQuery by remember { mutableStateOf("") }
-    // Bind to service when the screen is shown
     DisposableEffect(Unit) {
         viewModel.bindService(context)
         onDispose {
@@ -52,54 +49,56 @@ fun RecordingsScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        Column {
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = {
-                    searchQuery = it
-                    viewModel.performSemanticSearch(it)
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(8.dp),
-                placeholder = { Text("Search recordings...") },
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                singleLine = true
-            )
-            if (isRecording) {
-                AudioVisualizer(audioData = audioData)
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(top = 8.dp, bottom = 80.dp, start = 8.dp, end = 8.dp)
+        ) {
+            if (recordingsToShow.isEmpty()) {
+                item {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(32.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            if(searchResults != null) "No matching recordings" else "No recordings yet",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = Color.Gray
+                        )
+                    }
+                }
             }
 
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(8.dp)
-            ) {
-                // --- 1. MODIFICATION ---
-                // The item is now 'RecordingUiState'
-                items(recordingsToShow, key = { it.recording.id }) { uiState: RecordingsViewModel.RecordingUiState ->
-                    RecordingItem(
-                        uiState = uiState,
-                        playerState = playerState,
-                        onPlayPause = { viewModel.onPlayPauseClicked(uiState.recording) },
-                        onRewind = viewModel::onRewind,
-                        onForward = viewModel::onForward,
-                        onSeek = viewModel::onSeek,
-                        onRename = { viewModel.renameRecording(context, uiState.recording) },
-                        onDelete = { viewModel.deleteRecording(context, uiState.recording) },
-                        onTranscribe = { viewModel.transcribeRecording(context, uiState.recording) }
-                    )
-                }
-                item { Spacer(modifier = Modifier.height(80.dp)) }
+            items(recordingsToShow, key = { it.recording.id }) { uiState: RecordingsViewModel.RecordingUiState ->
+                RecordingItem(
+                    uiState = uiState,
+                    playerState = playerState,
+                    onPlayPause = { viewModel.onPlayPauseClicked(uiState.recording) },
+                    onRewind = viewModel::onRewind,
+                    onForward = viewModel::onForward,
+                    onSeek = viewModel::onSeek,
+                    onRename = { viewModel.renameRecording(context, uiState.recording) },
+                    onDelete = { viewModel.deleteRecording(context, uiState.recording) },
+                    onTranscribe = { viewModel.transcribeRecording(context, uiState.recording) }
+                )
             }
         }
 
-        Button(
+        // FAB at the bottom
+        ExtendedFloatingActionButton(
             onClick = { viewModel.toggleRecordingService(context) },
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
                 .align(Alignment.BottomCenter)
+                .padding(16.dp),
+            containerColor = if (isRecording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+            contentColor = if (isRecording) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onPrimary
         ) {
+            Icon(
+                if (isRecording) painterResource(R.drawable.ic_pause) else painterResource(R.drawable.ic_play_arrow),
+                contentDescription = null
+            )
+            Spacer(Modifier.width(8.dp))
             Text(if (isRecording) "Stop Recording" else "Start Recording")
         }
     }
@@ -107,8 +106,6 @@ fun RecordingsScreen(
 
 @Composable
 private fun RecordingItem(
-    // --- 2. MODIFICATION ---
-    // Parameter is now RecordingUiState
     uiState: RecordingsViewModel.RecordingUiState,
     playerState: RecordingsViewModel.PlayerState,
     onPlayPause: () -> Unit,
@@ -119,14 +116,11 @@ private fun RecordingItem(
     onDelete: () -> Unit,
     onTranscribe: () -> Unit
 ) {
-    // Extract the recording for easier use
     val recording = uiState.recording
-
     var isExpanded by remember { mutableStateOf(false) }
     val isPlayingThis = playerState.playingRecordingId == recording.id && playerState.isPlaying
     val isExpandedThis = playerState.playingRecordingId == recording.id
 
-    // Auto-expand when playback starts
     LaunchedEffect(isExpandedThis) {
         if (isExpandedThis) isExpanded = true
     }
@@ -167,13 +161,10 @@ private fun RecordingItem(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // --- 3. MODIFICATION ---
-            // Check for *live* progress first.
             if (uiState.liveProgress != null) {
-                // Show the LIVE progress bar
                 Column(modifier = Modifier.padding(top = 8.dp)) {
                     LinearProgressIndicator(
-                        progress = { uiState.liveProgress }, // Use lambda for M3
+                        progress = { uiState.liveProgress },
                         modifier = Modifier.fillMaxWidth()
                     )
                     Text(
@@ -184,7 +175,6 @@ private fun RecordingItem(
                     )
                 }
             } else {
-                // No live progress, fall back to the static status
                 when (recording.processingStatus) {
                     Recording.STATUS_COMPLETED -> {
                         Text(
@@ -196,8 +186,6 @@ private fun RecordingItem(
                         )
                     }
                     Recording.STATUS_PROCESSING -> {
-                        // This is now the "fallback" view for a processing
-                        // item that isn't the *currently* active one.
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.padding(top = 8.dp)
@@ -222,25 +210,19 @@ private fun RecordingItem(
                     }
                     Recording.STATUS_NOT_STARTED -> {
                         Text(
-                            text = "Awaiting processing...",
-                            style = MaterialTheme.typography.bodyMedium,
-                            maxLines = if (isExpanded) Int.MAX_VALUE else 3,
-                            overflow = if (isExpanded) TextOverflow.Clip else TextOverflow.Ellipsis,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            text = "unprocessed",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                         )
                     }
                 }
             }
-            // --- END MODIFICATION ---
 
-            if (isExpanded) {
+            AnimatedVisibility(visible = isExpanded) {
                 PlayerControls(
                     isPlaying = isPlayingThis,
                     currentPosition = if (isExpandedThis) playerState.currentPosition else 0,
                     totalDuration = recording.duration.toInt(),
-                    // Pass the processing status down
-                    // This button logic is now controlled by *both*
-                    // the static status and the live progress.
                     isTranscribing = recording.processingStatus == Recording.STATUS_PROCESSING,
                     onPlayPause = onPlayPause,
                     onRewind = onRewind,
@@ -258,7 +240,7 @@ private fun PlayerControls(
     isPlaying: Boolean,
     currentPosition: Int,
     totalDuration: Int,
-    isTranscribing: Boolean, // Added this
+    isTranscribing: Boolean,
     onPlayPause: () -> Unit,
     onRewind: () -> Unit,
     onForward: () -> Unit,
@@ -288,24 +270,26 @@ private fun PlayerControls(
             IconButton(onClick = onRewind) {
                 Icon(painterResource(R.drawable.ic_fast_rewind), contentDescription = "Rewind 5s")
             }
-            IconButton(onClick = onPlayPause, modifier = Modifier.size(56.dp)) {
+            FilledIconButton(
+                onClick = onPlayPause,
+                modifier = Modifier.size(56.dp)
+            ) {
                 Icon(
                     imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                     contentDescription = "Play/Pause",
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier.fillMaxSize().padding(12.dp)
                 )
             }
             IconButton(onClick = onForward) {
                 Icon(painterResource(R.drawable.ic_fast_forward), contentDescription = "Forward 5s")
             }
-            // --- MODIFIED BUTTON ---
+
             Button(
                 onClick = onTranscribe,
                 shape = MaterialTheme.shapes.small,
-                // Disable the button if transcription is in progress
-                enabled = !isTranscribing
+                enabled = !isTranscribing,
+                modifier = Modifier.height(40.dp)
             ) {
-                // Show a progress bar inside the button if processing
                 if (isTranscribing) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(20.dp),
@@ -316,7 +300,6 @@ private fun PlayerControls(
                     Text("Transcribe", fontFamily = Monospace)
                 }
             }
-            // --- END MODIFICATION ---
         }
     }
 }

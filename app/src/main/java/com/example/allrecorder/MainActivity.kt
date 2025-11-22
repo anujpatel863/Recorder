@@ -9,22 +9,32 @@ import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-// import androidx.compose.runtime.livedata.observeAsState // Not needed for StateFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import androidx.core.view.WindowCompat
@@ -32,8 +42,9 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.allrecorder.models.ModelRegistry
+import com.example.allrecorder.recordings.AudioVisualizer
 import com.example.allrecorder.recordings.RecordingsScreen
-import com.example.allrecorder.ui.components.BundleUiState
+import com.example.allrecorder.recordings.RecordingsViewModel
 import com.example.allrecorder.ui.components.ModelManagementDialog
 import com.example.allrecorder.ui.components.ModelManagementViewModel
 import com.example.allrecorder.ui.theme.AllRecorderTheme
@@ -94,9 +105,7 @@ class MainActivity : ComponentActivity() {
 
         ModalNavigationDrawer(
             drawerState = drawerState,
-            drawerContent = {
-                SettingsDrawerContent()
-            }
+            drawerContent = { SettingsDrawerContent() }
         ) {
             MainContent(onOpenDrawer = { scope.launch { drawerState.open() } })
         }
@@ -105,25 +114,136 @@ class MainActivity : ComponentActivity() {
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun MainContent(onOpenDrawer: () -> Unit) {
+        val recordingsViewModel: RecordingsViewModel = viewModel()
+
+        val audioData by recordingsViewModel.audioData.collectAsState()
+        val isRecording by remember { derivedStateOf { recordingsViewModel.isServiceRecording } }
+
+        // State for search mode interaction
+        var isSearchActive by remember { mutableStateOf(false) }
+        var searchQuery by remember { mutableStateOf("") }
+
         Scaffold(
+            containerColor = RetroPrimaryDark,
             topBar = {
-                TopAppBar(
-                    title = { Text("AllRecorder", fontFamily = Monospace) },
-                    navigationIcon = {
-                        IconButton(onClick = onOpenDrawer) {
-                            Icon(Icons.Default.Menu, contentDescription = "Open Menu")
+                Surface(
+                    color = RetroPrimaryDark,
+                    shadowElevation = 4.dp,
+                    modifier = Modifier.windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Top))
+                ) {
+                    if (isSearchActive) {
+                        // --- Search Mode View ---
+                        Row(
+                            modifier = Modifier.fillMaxWidth().height(64.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            IconButton(onClick = {
+                                isSearchActive = false
+                                searchQuery = ""
+                                recordingsViewModel.performSemanticSearch("")
+                            }) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = MaterialTheme.colorScheme.onPrimary)
+                            }
+                            TextField(
+                                value = searchQuery,
+                                onValueChange = {
+                                    searchQuery = it
+                                    recordingsViewModel.performSemanticSearch(it)
+                                },
+                                placeholder = {
+                                    Text("Search...", color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f))
+                                },
+                                modifier = Modifier.weight(1f),
+                                textStyle = TextStyle(fontSize = 18.sp, color = MaterialTheme.colorScheme.onPrimary),
+                                singleLine = true,
+                                colors = TextFieldDefaults.colors(
+                                    focusedContainerColor = Color.Transparent,
+                                    unfocusedContainerColor = Color.Transparent,
+                                    cursorColor = MaterialTheme.colorScheme.onPrimary,
+                                    focusedIndicatorColor = Color.Transparent,
+                                    unfocusedIndicatorColor = Color.Transparent
+                                ),
+                                trailingIcon = {
+                                    if (searchQuery.isNotEmpty()) {
+                                        IconButton(onClick = {
+                                            searchQuery = ""
+                                            recordingsViewModel.performSemanticSearch("")
+                                        }) {
+                                            Icon(Icons.Default.Close, contentDescription = "Clear", tint = MaterialTheme.colorScheme.onPrimary)
+                                        }
+                                    }
+                                }
+                            )
                         }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = RetroPrimaryDark,
-                        titleContentColor = MaterialTheme.colorScheme.onPrimary,
-                        navigationIconContentColor = MaterialTheme.colorScheme.onPrimary
-                    )
-                )
+                    } else {
+                        // --- Default Mode: 50/50 Split ---
+                        Row(
+                            modifier = Modifier.fillMaxWidth().height(64.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Left 50% : Menu Icon + Title
+                            Row(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                IconButton(onClick = onOpenDrawer) {
+                                    Icon(
+                                        Icons.Default.Menu,
+                                        contentDescription = "Menu",
+                                        tint = MaterialTheme.colorScheme.onPrimary
+                                    )
+                                }
+                                Text(
+                                    text = "AllRecorder",
+                                    fontFamily = Monospace,
+                                    color = MaterialTheme.colorScheme.onPrimary,
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(start = 4.dp)
+                                )
+                            }
+
+                            // Right 50% : Visualizer + Search Icon
+                            Row(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                // Visualizer fills the gap between center and search icon
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .fillMaxHeight()
+                                        .padding(vertical = 8.dp, horizontal = 8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    // Only show visualizer if recording
+                                    if (isRecording) {
+                                        AudioVisualizer(audioData = audioData)
+                                    }
+                                }
+
+                                IconButton(onClick = { isSearchActive = true }) {
+                                    Icon(
+                                        Icons.Default.Search,
+                                        contentDescription = "Search",
+                                        tint = MaterialTheme.colorScheme.onPrimary
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
         ) { paddingValues ->
             Column(modifier = Modifier.padding(paddingValues)) {
-                RecordingsScreen()
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    RecordingsScreen(viewModel = recordingsViewModel)
+                }
             }
         }
     }
@@ -135,20 +255,17 @@ class MainActivity : ComponentActivity() {
         var showAsrModelDialog by remember { mutableStateOf(false) }
         var showManageDialog by remember { mutableStateOf(false) }
 
-        // State for the switch
         var asrEnhancementEnabled by remember {
             mutableStateOf(SettingsManager.asrEnhancementEnabled)
         }
 
         val context = LocalContext.current
-        // Shared ViewModel for managing download states
         val modelViewModel: ModelManagementViewModel = viewModel()
 
         ModalDrawerSheet(windowInsets = WindowInsets.systemBars) {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 Spacer(Modifier.height(12.dp))
 
-                // --- 1. Storage Management Card ---
                 Card(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                     modifier = Modifier
@@ -190,17 +307,13 @@ class MainActivity : ComponentActivity() {
                     onClick = { showLanguageDialog = true }
                 )
 
-                // --- 2. Custom ASR Model Selector ---
                 NavigationDrawerItem(
                     label = { Text("ASR Model") },
                     selected = false,
                     onClick = { showAsrModelDialog = true }
                 )
 
-                // --- 3. Robust Noise Reduction Switch ---
                 val noiseBundle = ModelRegistry.getBundle("bundle_enhancement")!!
-
-                // FIX 1: Use collectAsState() for StateFlow
                 val noiseState by modelViewModel.getBundleState(noiseBundle).collectAsState()
 
                 NavigationDrawerItem(
@@ -208,26 +321,21 @@ class MainActivity : ComponentActivity() {
                     selected = false,
                     badge = {
                         if (noiseState.isDownloading) {
-                            // Show spinner if downloading
                             CircularProgressIndicator(
                                 modifier = Modifier.size(24.dp),
                                 strokeWidth = 2.dp
                             )
                         } else {
                             Switch(
-                                // Checked ONLY if enabled settings is true AND model is physically ready
                                 checked = asrEnhancementEnabled && noiseState.isReady,
                                 onCheckedChange = { isChecked ->
                                     if (isChecked) {
                                         if (noiseState.isReady) {
-                                            // Ready to enable
                                             asrEnhancementEnabled = true
                                             SettingsManager.prefs.edit { putBoolean("asr_enhancement", true) }
                                         } else {
-                                            // Needs download
                                             Toast.makeText(context, "Downloading Noise Reduction model...", Toast.LENGTH_SHORT).show()
                                             modelViewModel.downloadBundle(noiseBundle)
-                                            // Don't enable switch yet, wait for download to finish
                                         }
                                     } else {
                                         asrEnhancementEnabled = false
@@ -242,7 +350,6 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // --- Dialogs ---
         if (showChunkDialog) {
             ListPreferenceDialog(
                 key = "chunk_duration",
@@ -262,7 +369,6 @@ class MainActivity : ComponentActivity() {
             )
         }
 
-        // --- Robust Custom Dialogs ---
         if (showAsrModelDialog) {
             AsrModelSelectionDialog(
                 onDismiss = { showAsrModelDialog = false },
@@ -286,7 +392,6 @@ class MainActivity : ComponentActivity() {
         val context = LocalContext.current
         val currentModel = SettingsManager.asrModel
 
-        // Maps key to (Label, BundleID)
         val options = listOf(
             Triple("tiny", "Tiny (Fast)", "bundle_asr_tiny"),
             Triple("base", "Base (Balanced)", "bundle_asr_base"),
@@ -302,10 +407,7 @@ class MainActivity : ComponentActivity() {
                     options.forEach { (key, label, bundleId) ->
                         val bundle = ModelRegistry.getBundle(bundleId)
                         if (bundle != null) {
-                            // FIX 2: Use collectAsState() for StateFlow
                             val state by viewModel.getBundleState(bundle).collectAsState()
-
-                            // Logic: Can select only if fully ready and NOT currently downloading
                             val isSelectable = state.isReady && !state.isDownloading
                             val isSelected = (currentModel == key)
 
@@ -345,12 +447,9 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }
 
-                                // Action Buttons
                                 if (state.isDownloading) {
-                                    // Show mini-loader
                                     CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
                                 } else if (!state.isReady) {
-                                    // Download button
                                     IconButton(onClick = {
                                         viewModel.downloadBundle(bundle)
                                         Toast.makeText(context, "Starting download...", Toast.LENGTH_SHORT).show()

@@ -21,7 +21,8 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -52,6 +53,8 @@ android {
         }
     }
 }
+
+
 
 dependencies {
 
@@ -95,12 +98,12 @@ dependencies {
     implementation(files("libs/sherpa-onnx-1.12.15.aar"))
 
     // --- ML Libs ---
-    implementation("com.github.gkonovalov.android-vad:silero:2.0.10")
+//    implementation("com.github.gkonovalov.android-vad:silero:2.0.10")
     implementation(libs.tensorflow.lite)
-    implementation(libs.tensorflow.lite.support)
+//    implementation(libs.tensorflow.lite.support)
 //    implementation(libs.onnxruntime.android)
-    implementation(libs.pytorch.android)
-    implementation(libs.pytorch.android.torchvision)
+//    implementation(libs.pytorch.android)
+//    implementation(libs.pytorch.android.torchvision)
     implementation(libs.jtransforms)
 
     // --- Other ---
