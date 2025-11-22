@@ -135,8 +135,6 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    // ... (Rest of the logic: getOrchestrator, toggleStar, saveRecordingAs, transcribe, search, player methods remain identical) ...
-
     private fun getOrchestrator(): TranscriptionOrchestrator {
         transcriptionOrchestrator?.let { return it }
         val newOrchestrator = TranscriptionOrchestrator(getApplication())
@@ -144,10 +142,11 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
         return newOrchestrator
     }
 
+    // FIX: Use .copy() to prevent mutating the object held by the UI
     fun toggleStar(recording: Recording) {
         viewModelScope.launch(Dispatchers.IO) {
-            recording.isStarred = !recording.isStarred
-            recordingDao.update(recording)
+            val updatedRecording = recording.copy(isStarred = !recording.isStarred)
+            recordingDao.update(updatedRecording)
         }
     }
 
@@ -227,9 +226,12 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
         }
 
         viewModelScope.launch(Dispatchers.IO) {
-            recording.processingStatus = Recording.STATUS_PROCESSING
-            recording.transcript = null
-            recordingDao.update(recording)
+            // FIX: Create a copy for the processing state
+            val processingRec = recording.copy(
+                processingStatus = Recording.STATUS_PROCESSING,
+                transcript = null
+            )
+            recordingDao.update(processingRec)
 
             _transcriptionProgress.update {
                 TranscriptionProgress(recordingId = recording.id, progress = 0f, message = "Initializing...")
@@ -276,27 +278,40 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
                 }
                 finalStatus = Recording.STATUS_COMPLETED
 
+                // Use a local variable for the new embedding
+                var newEmbedding = processingRec.embedding
+
                 if (finalStatus == Recording.STATUS_COMPLETED && finalTranscript.isNotBlank()) {
                     val searchBundle = ModelRegistry.getBundle("bundle_search")
                     if (searchBundle != null && modelManager.isBundleReady(searchBundle)) {
                         _transcriptionProgress.update { it.copy(message = "Indexing search...", progress = 0.95f) }
                         val vector = embeddingManager.generateEmbedding(finalTranscript)
-                        recording.embedding = vector
+                        newEmbedding = vector // Assign to local var
                     }
                 }
+
+                // FIX: Final update using .copy() with collected results
+                val completedRec = processingRec.copy(
+                    transcript = finalTranscript,
+                    processingStatus = finalStatus,
+                    embedding = newEmbedding
+                )
+                recordingDao.update(completedRec)
 
             } catch (e: Exception) {
                 Log.e("RecordingsViewModel", "Transcription failed", e)
                 finalTranscript = "[Error: ${e.localizedMessage}]"
                 finalStatus = Recording.STATUS_FAILED
+
+                val failedRec = processingRec.copy(
+                    transcript = finalTranscript,
+                    processingStatus = finalStatus
+                )
+                recordingDao.update(failedRec)
             } finally {
                 tempEnhancedFile?.delete()
                 _transcriptionProgress.update { TranscriptionProgress() }
             }
-
-            recording.transcript = finalTranscript
-            recording.processingStatus = finalStatus
-            recordingDao.update(recording)
         }
     }
 
@@ -440,6 +455,7 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
         progressUpdateJob = null
     }
 
+    // FIX: Use .copy() here as well
     fun renameRecording(context: Context, recording: Recording) {
         stopPlayback()
         val editText = EditText(context).apply { setText(File(recording.filePath).nameWithoutExtension) }
@@ -450,8 +466,8 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
                     val oldFile = File(recording.filePath)
                     val newFile = File(oldFile.parent, "$newName.wav")
                     if (oldFile.renameTo(newFile)) {
-                        recording.filePath = newFile.absolutePath
-                        recordingDao.update(recording)
+                        val renamedRecording = recording.copy(filePath = newFile.absolutePath)
+                        recordingDao.update(renamedRecording)
                     }
                 }
             }
