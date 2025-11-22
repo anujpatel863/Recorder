@@ -25,7 +25,8 @@ interface RecordingDao {
     @Query("SELECT * FROM recordings ORDER BY startTime DESC")
     fun getAllRecordings(): Flow<List<Recording>>
 
-
+    @Query("SELECT * FROM recordings WHERE isStarred = 1 ORDER BY startTime DESC")
+    fun getStarredRecordings(): Flow<List<Recording>>
     @Query("SELECT * FROM recordings WHERE processingStatus = 0 ORDER BY startTime ASC")
     suspend fun getUnprocessedRecordings(): List<Recording>
     // --- END OF FIX ---

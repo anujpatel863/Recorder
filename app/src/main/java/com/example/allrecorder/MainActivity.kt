@@ -19,10 +19,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -44,6 +47,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.allrecorder.models.ModelRegistry
 import com.example.allrecorder.recordings.AudioVisualizer
 import com.example.allrecorder.recordings.RecordingsScreen
+import com.example.allrecorder.recordings.StarredRecordingsScreen
 import com.example.allrecorder.recordings.RecordingsViewModel
 import com.example.allrecorder.ui.components.ModelManagementDialog
 import com.example.allrecorder.ui.components.ModelManagementViewModel
@@ -52,6 +56,10 @@ import com.example.allrecorder.ui.theme.Monospace
 import com.example.allrecorder.ui.theme.RetroPrimary
 import com.example.allrecorder.ui.theme.RetroPrimaryDark
 import kotlinx.coroutines.launch
+
+enum class Screen {
+    Home, Starred
+}
 
 class MainActivity : ComponentActivity() {
 
@@ -103,17 +111,34 @@ class MainActivity : ComponentActivity() {
         val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
         val scope = rememberCoroutineScope()
 
+        // Navigation State
+        var currentScreen by remember { mutableStateOf(Screen.Home) }
+
         ModalNavigationDrawer(
             drawerState = drawerState,
-            drawerContent = { SettingsDrawerContent() }
+            drawerContent = {
+                SettingsDrawerContent(
+                    currentScreen = currentScreen,
+                    onScreenSelected = { screen ->
+                        currentScreen = screen
+                        scope.launch { drawerState.close() }
+                    }
+                )
+            }
         ) {
-            MainContent(onOpenDrawer = { scope.launch { drawerState.open() } })
+            MainContent(
+                currentScreen = currentScreen,
+                onOpenDrawer = { scope.launch { drawerState.open() } }
+            )
         }
     }
 
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
-    private fun MainContent(onOpenDrawer: () -> Unit) {
+    private fun MainContent(
+        currentScreen: Screen,
+        onOpenDrawer: () -> Unit
+    ) {
         val recordingsViewModel: RecordingsViewModel = viewModel()
 
         val audioData by recordingsViewModel.audioData.collectAsState()
@@ -122,6 +147,11 @@ class MainActivity : ComponentActivity() {
         // State for search mode interaction
         var isSearchActive by remember { mutableStateOf(false) }
         var searchQuery by remember { mutableStateOf("") }
+
+        val titleText = when(currentScreen) {
+            Screen.Home -> "AllRecorder"
+            Screen.Starred -> "Starred"
+        }
 
         Scaffold(
             containerColor = RetroPrimaryDark,
@@ -164,24 +194,36 @@ class MainActivity : ComponentActivity() {
                                     unfocusedIndicatorColor = Color.Transparent
                                 ),
                                 trailingIcon = {
-                                    if (searchQuery.isNotEmpty()) {
-                                        IconButton(onClick = {
-                                            searchQuery = ""
-                                            recordingsViewModel.performSemanticSearch("")
-                                        }) {
-                                            Icon(Icons.Default.Close, contentDescription = "Clear", tint = MaterialTheme.colorScheme.onPrimary)
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        // Semantic Search Indicator
+                                        Icon(
+                                            imageVector = Icons.Default.AutoAwesome,
+                                            contentDescription = "Semantic Search Active",
+                                            tint = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.6f),
+                                            modifier = Modifier.size(20.dp)
+                                        )
+
+                                        if (searchQuery.isNotEmpty()) {
+                                            IconButton(onClick = {
+                                                searchQuery = ""
+                                                recordingsViewModel.performSemanticSearch("")
+                                            }) {
+                                                Icon(Icons.Default.Close, contentDescription = "Clear", tint = MaterialTheme.colorScheme.onPrimary)
+                                            }
+                                        } else {
+                                            Spacer(modifier = Modifier.width(12.dp))
                                         }
                                     }
                                 }
                             )
                         }
                     } else {
-                        // --- Default Mode: 50/50 Split ---
+                        // --- Default Mode ---
                         Row(
                             modifier = Modifier.fillMaxWidth().height(64.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            // Left 50% : Menu Icon + Title
+                            // Left: Menu + Title
                             Row(
                                 modifier = Modifier
                                     .weight(1f)
@@ -196,7 +238,7 @@ class MainActivity : ComponentActivity() {
                                     )
                                 }
                                 Text(
-                                    text = "AllRecorder",
+                                    text = titleText,
                                     fontFamily = Monospace,
                                     color = MaterialTheme.colorScheme.onPrimary,
                                     style = MaterialTheme.typography.titleLarge,
@@ -205,7 +247,7 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
 
-                            // Right 50% : Visualizer + Search Icon
+                            // Right: Visualizer + Search
                             Row(
                                 modifier = Modifier
                                     .weight(1f)
@@ -213,7 +255,7 @@ class MainActivity : ComponentActivity() {
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.End
                             ) {
-                                // Visualizer fills the gap between center and search icon
+                                // Visualizer
                                 Box(
                                     modifier = Modifier
                                         .weight(1f)
@@ -221,7 +263,6 @@ class MainActivity : ComponentActivity() {
                                         .padding(vertical = 8.dp, horizontal = 8.dp),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    // Only show visualizer if recording
                                     if (isRecording) {
                                         AudioVisualizer(audioData = audioData)
                                     }
@@ -242,14 +283,21 @@ class MainActivity : ComponentActivity() {
         ) { paddingValues ->
             Column(modifier = Modifier.padding(paddingValues)) {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    RecordingsScreen(viewModel = recordingsViewModel)
+                    // Navigation Logic
+                    when(currentScreen) {
+                        Screen.Home -> RecordingsScreen(viewModel = recordingsViewModel)
+                        Screen.Starred -> StarredRecordingsScreen(viewModel = recordingsViewModel)
+                    }
                 }
             }
         }
     }
 
     @Composable
-    private fun SettingsDrawerContent() {
+    private fun SettingsDrawerContent(
+        currentScreen: Screen = Screen.Home,
+        onScreenSelected: (Screen) -> Unit = {}
+    ) {
         var showChunkDialog by remember { mutableStateOf(false) }
         var showLanguageDialog by remember { mutableStateOf(false) }
         var showAsrModelDialog by remember { mutableStateOf(false) }
@@ -266,6 +314,26 @@ class MainActivity : ComponentActivity() {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 Spacer(Modifier.height(12.dp))
 
+                // --- Navigation Section ---
+                Text("Navigation", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+
+                NavigationDrawerItem(
+                    icon = { Icon(Icons.Default.Folder, null) },
+                    label = { Text("All Recordings") },
+                    selected = currentScreen == Screen.Home,
+                    onClick = { onScreenSelected(Screen.Home) }
+                )
+
+                NavigationDrawerItem(
+                    icon = { Icon(Icons.Default.Star, null) },
+                    label = { Text("Starred") },
+                    selected = currentScreen == Screen.Starred,
+                    onClick = { onScreenSelected(Screen.Starred) }
+                )
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+                // --- Existing Settings ---
                 Card(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                     modifier = Modifier
@@ -350,6 +418,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // ... (Dialogs remain unchanged) ...
         if (showChunkDialog) {
             ListPreferenceDialog(
                 key = "chunk_duration",

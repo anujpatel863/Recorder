@@ -18,7 +18,8 @@ data class Recording(
 
     var transcript: String? = null, // Raw transcript
     var speakerLabels: String? = null ,
-    var embedding: List<Float>? = null
+    var embedding: List<Float>? = null,
+    var isStarred: Boolean = false
 ) {
     // This makes the code easier to read
     companion object {

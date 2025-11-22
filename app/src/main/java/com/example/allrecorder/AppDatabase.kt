@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
 
 // Conversation::class REMOVED from entities
-@Database(entities = [Recording::class], version = 5, exportSchema = false) // Version incremented
+@Database(entities = [Recording::class], version = 6, exportSchema = false) // Version incremented
 @TypeConverters(Converters::class) // Add this line
 abstract class AppDatabase : RoomDatabase() {
 

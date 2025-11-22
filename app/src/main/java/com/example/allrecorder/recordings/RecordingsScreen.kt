@@ -11,6 +11,10 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.livedata.observeAsState
@@ -80,7 +84,9 @@ fun RecordingsScreen(
                     onSeek = viewModel::onSeek,
                     onRename = { viewModel.renameRecording(context, uiState.recording) },
                     onDelete = { viewModel.deleteRecording(context, uiState.recording) },
-                    onTranscribe = { viewModel.transcribeRecording(context, uiState.recording) }
+                    onTranscribe = { viewModel.transcribeRecording(context, uiState.recording) },
+                    onToggleStar = { viewModel.toggleStar(uiState.recording) },
+                    onSaveAs = { viewModel.saveRecordingAs(context, uiState.recording) }
                 )
             }
         }
@@ -104,6 +110,53 @@ fun RecordingsScreen(
     }
 }
 
+// --- NEW COMPOSABLE FOR STARRED PAGE ---
+@Composable
+fun StarredRecordingsScreen(
+    viewModel: RecordingsViewModel
+) {
+    // Observe only starred recordings
+    val recordings by viewModel.starredRecordings.observeAsState(emptyList())
+    val playerState by viewModel.playerState.collectAsState()
+    val context = LocalContext.current
+
+    DisposableEffect(Unit) {
+        viewModel.bindService(context)
+        onDispose { viewModel.unbindService(context) }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(8.dp)
+        ) {
+            if (recordings.isEmpty()) {
+                item {
+                    Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                        Text("No starred recordings", color = Color.Gray)
+                    }
+                }
+            }
+
+            items(recordings, key = { it.recording.id }) { uiState ->
+                RecordingItem(
+                    uiState = uiState,
+                    playerState = playerState,
+                    onPlayPause = { viewModel.onPlayPauseClicked(uiState.recording) },
+                    onRewind = viewModel::onRewind,
+                    onForward = viewModel::onForward,
+                    onSeek = viewModel::onSeek,
+                    onRename = { viewModel.renameRecording(context, uiState.recording) },
+                    onDelete = { viewModel.deleteRecording(context, uiState.recording) },
+                    onTranscribe = { viewModel.transcribeRecording(context, uiState.recording) },
+                    onToggleStar = { viewModel.toggleStar(uiState.recording) },
+                    onSaveAs = { viewModel.saveRecordingAs(context, uiState.recording) }
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun RecordingItem(
     uiState: RecordingsViewModel.RecordingUiState,
@@ -114,7 +167,9 @@ private fun RecordingItem(
     onSeek: (Float) -> Unit,
     onRename: () -> Unit,
     onDelete: () -> Unit,
-    onTranscribe: () -> Unit
+    onTranscribe: () -> Unit,
+    onToggleStar: () -> Unit,
+    onSaveAs: () -> Unit
 ) {
     val recording = uiState.recording
     var isExpanded by remember { mutableStateOf(false) }
@@ -150,13 +205,36 @@ private fun RecordingItem(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Text(
-                        text = formatDuration(recording.duration),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = formatDuration(recording.duration),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        if (uiState.isSemanticMatch) {
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Icon(
+                                imageVector = Icons.Default.AutoAwesome,
+                                contentDescription = "Semantic Match",
+                                tint = MaterialTheme.colorScheme.tertiary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+
+                // Star Icon Action
+                IconButton(onClick = onToggleStar) {
+                    Icon(
+                        imageVector = if (recording.isStarred) Icons.Default.Star else Icons.Default.StarBorder,
+                        contentDescription = if (recording.isStarred) "Unstar" else "Star",
+                        tint = if (recording.isStarred) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                ItemOptionsMenu(onRename, onDelete)
+
+                ItemOptionsMenu(onRename, onDelete, onSaveAs)
             }
 
             Spacer(modifier = Modifier.height(8.dp))
@@ -307,7 +385,8 @@ private fun PlayerControls(
 @Composable
 private fun ItemOptionsMenu(
     onRename: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onSaveAs: () -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
 
@@ -326,6 +405,14 @@ private fun ItemOptionsMenu(
                     expanded = false
                 },
                 leadingIcon = { Icon(Icons.Default.Edit, contentDescription = "Rename") }
+            )
+            DropdownMenuItem(
+                text = { Text("Save As...") },
+                onClick = {
+                    onSaveAs()
+                    expanded = false
+                },
+                leadingIcon = { Icon(Icons.Default.SaveAlt, contentDescription = "Save As") }
             )
             DropdownMenuItem(
                 text = { Text("Delete") },

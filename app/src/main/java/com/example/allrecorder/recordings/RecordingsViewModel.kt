@@ -1,12 +1,16 @@
 package com.example.allrecorder.recordings
 
 import android.app.Application
+import android.content.ContentValues
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.media.MediaPlayer
+import android.os.Build
+import android.os.Environment
 import android.os.IBinder
+import android.provider.MediaStore
 import android.util.Log
 import android.widget.EditText
 import android.widget.Toast
@@ -31,6 +35,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
+import java.io.FileInputStream
 
 class RecordingsViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -66,14 +71,20 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
     data class RecordingUiState(
         val recording: Recording,
         val liveProgress: Float? = null,
-        val liveMessage: String? = null
+        val liveMessage: String? = null,
+        val isSemanticMatch: Boolean = false
     )
 
     private val _transcriptionProgress = MutableStateFlow(TranscriptionProgress())
-    private val _allRecordingsInternal = recordingDao.getAllRecordings().asLiveData()
     private val _transcriptionProgressLiveData = _transcriptionProgress.asLiveData()
 
+    // --- All Recordings Sources ---
+    private val _allRecordingsInternal = recordingDao.getAllRecordings().asLiveData()
     val allRecordings: MediatorLiveData<List<RecordingUiState>> = MediatorLiveData()
+
+    // --- Starred Recordings Sources ---
+    private val _starredRecordingsInternal = recordingDao.getStarredRecordings().asLiveData()
+    val starredRecordings: MediatorLiveData<List<RecordingUiState>> = MediatorLiveData()
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -94,6 +105,7 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     init {
+        // Setup All Recordings
         allRecordings.addSource(_allRecordingsInternal) { recordings ->
             val progress = _transcriptionProgressLiveData.value ?: TranscriptionProgress()
             allRecordings.value = combineRecordingAndProgress(recordings, progress)
@@ -102,6 +114,17 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
             val recordings = _allRecordingsInternal.value ?: emptyList()
             allRecordings.value = combineRecordingAndProgress(recordings, progress)
         }
+
+        // Setup Starred Recordings
+        starredRecordings.addSource(_starredRecordingsInternal) { recordings ->
+            val progress = _transcriptionProgressLiveData.value ?: TranscriptionProgress()
+            starredRecordings.value = combineRecordingAndProgress(recordings, progress)
+        }
+        starredRecordings.addSource(_transcriptionProgressLiveData) { progress ->
+            val recordings = _starredRecordingsInternal.value ?: emptyList()
+            starredRecordings.value = combineRecordingAndProgress(recordings, progress)
+        }
+
         viewModelScope.launch {
             while(true) {
                 if (isServiceRecording != RecordingService.isRecording) {
@@ -112,11 +135,70 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    // ... (Rest of the logic: getOrchestrator, toggleStar, saveRecordingAs, transcribe, search, player methods remain identical) ...
+
     private fun getOrchestrator(): TranscriptionOrchestrator {
         transcriptionOrchestrator?.let { return it }
         val newOrchestrator = TranscriptionOrchestrator(getApplication())
         transcriptionOrchestrator = newOrchestrator
         return newOrchestrator
+    }
+
+    fun toggleStar(recording: Recording) {
+        viewModelScope.launch(Dispatchers.IO) {
+            recording.isStarred = !recording.isStarred
+            recordingDao.update(recording)
+        }
+    }
+
+    fun saveRecordingAs(context: Context, recording: Recording) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val srcFile = File(recording.filePath)
+                if (!srcFile.exists()) {
+                    viewModelScope.launch(Dispatchers.Main) {
+                        Toast.makeText(context, "Error: File not found.", Toast.LENGTH_SHORT).show()
+                    }
+                    return@launch
+                }
+
+                val fileName = "Saved_${srcFile.name}"
+                val contentValues = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                    put(MediaStore.MediaColumns.MIME_TYPE, "audio/wav")
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/AllRecorder")
+                        put(MediaStore.MediaColumns.IS_PENDING, 1)
+                    }
+                }
+
+                val resolver = context.contentResolver
+                val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+
+                if (uri != null) {
+                    resolver.openOutputStream(uri).use { outputStream ->
+                        FileInputStream(srcFile).use { inputStream ->
+                            inputStream.copyTo(outputStream!!)
+                        }
+                    }
+
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        contentValues.clear()
+                        contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                        resolver.update(uri, contentValues, null, null)
+                    }
+
+                    viewModelScope.launch(Dispatchers.Main) {
+                        Toast.makeText(context, "Saved to Downloads/AllRecorder", Toast.LENGTH_LONG).show()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("RecordingsViewModel", "Save As failed", e)
+                viewModelScope.launch(Dispatchers.Main) {
+                    Toast.makeText(context, "Failed to save file.", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
     }
 
     fun transcribeRecording(context: Context, recording: Recording) {
@@ -129,7 +211,6 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
         val modelName = SettingsManager.asrModel
         val enhancementEnabled = SettingsManager.asrEnhancementEnabled
 
-        // --- 1. CRITICAL CHECK: ASR Bundle (Required) ---
         val asrBundleId = "bundle_asr_$modelName"
         val asrBundle = ModelRegistry.getBundle(asrBundleId)
 
@@ -138,17 +219,12 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
             return
         }
 
-        // --- 2. OPTIONAL CHECK: Diarization ---
         val diarizationBundle = ModelRegistry.getBundle("bundle_diarization")
         val hasDiarization = diarizationBundle != null && modelManager.isBundleReady(diarizationBundle)
 
         if (!hasDiarization) {
-            // Inform user but CONTINUE
             Toast.makeText(context, "Speaker ID missing. Transcribing without speaker labels.", Toast.LENGTH_SHORT).show()
         }
-
-        // --- 3. OPTIONAL CHECK: Enhancement ---
-        // We check this inside the coroutine to decide whether to skip or run
 
         viewModelScope.launch(Dispatchers.IO) {
             recording.processingStatus = Recording.STATUS_PROCESSING
@@ -166,7 +242,6 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
             var finalStatus: Int
 
             try {
-                // --- A. Enhancement (Skip if missing) ---
                 val noiseBundle = ModelRegistry.getBundle("bundle_enhancement")
                 val canEnhance = enhancementEnabled && noiseBundle != null && modelManager.isBundleReady(noiseBundle)
 
@@ -178,11 +253,9 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
                         tempEnhancedFile = File(enhancedPath)
                     }
                 } else if (enhancementEnabled) {
-                    // User wanted it, but files missing
                     Log.w("RecordingsViewModel", "Enhancement skipped: Models missing")
                 }
 
-                // --- B. Transcription ---
                 _transcriptionProgress.update {
                     val msg = if(hasDiarization) "Transcribing & ID Speakers..." else "Transcribing (Simple)..."
                     it.copy(message = msg, progress = 0.1f)
@@ -196,7 +269,6 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
                     if (hasDiarization) {
                         segments.joinToString("\n") { "Speaker ${it.speakerId}: ${it.text}" }
                     } else {
-                        // Cleaner output for simple transcription
                         segments.joinToString("\n") { it.text }
                     }
                 } else {
@@ -204,7 +276,6 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
                 }
                 finalStatus = Recording.STATUS_COMPLETED
 
-                // --- C. Search Indexing (Optional) ---
                 if (finalStatus == Recording.STATUS_COMPLETED && finalTranscript.isNotBlank()) {
                     val searchBundle = ModelRegistry.getBundle("bundle_search")
                     if (searchBundle != null && modelManager.isBundleReady(searchBundle)) {
@@ -236,28 +307,55 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
         }
 
         val searchBundle = ModelRegistry.getBundle("bundle_search")
-        if (searchBundle == null || !modelManager.isBundleReady(searchBundle)) return
+        val isSemanticReady = searchBundle != null && modelManager.isBundleReady(searchBundle)
 
         viewModelScope.launch(Dispatchers.Default) {
-            val queryVector = embeddingManager.generateEmbedding(query) ?: return@launch
             val currentList = _allRecordingsInternal.value ?: emptyList()
-            val results = currentList.mapNotNull { rec -> // 1. Rename 'uiState' to 'rec'
-                // 2. Use 'rec' directly
-                if (rec.embedding != null) {
-                    val score = embeddingManager.cosineSimilarity(queryVector, rec.embedding!!)
-                    if (score > 0.25) Pair(rec, score) else null
-                } else null
-            }
-                .sortedByDescending { it.second }
-                .map {
-                    RecordingUiState(it.first) // 3. Wrap it in UiState at the end
+            val results: List<RecordingUiState>
+
+            if (isSemanticReady) {
+                val queryVector = embeddingManager.generateEmbedding(query)
+
+                if (queryVector != null) {
+                    results = currentList.mapNotNull { rec ->
+                        val isKeywordMatch = rec.transcript?.contains(query, ignoreCase = true) == true
+                        var score = 0f
+                        var isSemanticMatch = false
+
+                        if (rec.embedding != null) {
+                            score = embeddingManager.cosineSimilarity(queryVector, rec.embedding!!)
+                            isSemanticMatch = score > 0.25
+                        }
+
+                        if (isKeywordMatch || isSemanticMatch) {
+                            val finalScore = if (isKeywordMatch) maxOf(score, 0.8f) else score
+                            Triple(rec, finalScore, isSemanticMatch)
+                        } else {
+                            null
+                        }
+                    }
+                        .sortedByDescending { it.second }
+                        .map { (rec, _, isSemantic) ->
+                            RecordingUiState(rec, isSemanticMatch = isSemantic)
+                        }
+                } else {
+                    results = performKeywordSearch(currentList, query)
                 }
+            } else {
+                results = performKeywordSearch(currentList, query)
+            }
 
             _searchResults.value = results
         }
     }
 
-    // ... (Rest of Player Logic unchanged) ...
+    private fun performKeywordSearch(list: List<Recording>, query: String): List<RecordingUiState> {
+        return list.filter {
+            it.transcript?.contains(query, ignoreCase = true) == true
+        }.map {
+            RecordingUiState(it, isSemanticMatch = false)
+        }
+    }
 
     fun onPlayPauseClicked(recording: Recording) {
         val currentState = _playerState.value
@@ -372,7 +470,10 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
 
     private fun combineRecordingAndProgress(recordings: List<Recording>, progress: TranscriptionProgress): List<RecordingUiState> {
         return recordings.map { rec ->
-            if (rec.id == progress.recordingId) RecordingUiState(rec, progress.progress, progress.message) else RecordingUiState(rec)
+            if (rec.id == progress.recordingId)
+                RecordingUiState(rec, progress.progress, progress.message)
+            else
+                RecordingUiState(rec)
         }
     }
 
