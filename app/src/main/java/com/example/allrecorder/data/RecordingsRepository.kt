@@ -36,6 +36,11 @@ class RecordingsRepository @Inject constructor(
 
     fun getStarredRecordings(): Flow<List<Recording>> = recordingDao.getStarredRecordings()
 
+    // [NEW] Generic Update for Tags (and other fields)
+    suspend fun updateRecording(recording: Recording) = withContext(Dispatchers.IO) {
+        recordingDao.update(recording)
+    }
+
     suspend fun loadAmplitudes(recording: Recording): List<Int> = withContext(Dispatchers.IO) {
         try {
             val file = File(recording.filePath)
@@ -52,7 +57,7 @@ class RecordingsRepository @Inject constructor(
 
     suspend fun renameRecording(recording: Recording, newName: String) = withContext(Dispatchers.IO) {
         val oldFile = File(recording.filePath)
-        val newFile = File(oldFile.parent, "$newName.wav") // Assuming .wav for now
+        val newFile = File(oldFile.parent, "$newName.wav") // Assuming .wav for now - ideally preserve extension
         if (oldFile.renameTo(newFile)) {
             val renamedRecording = recording.copy(filePath = newFile.absolutePath)
             recordingDao.update(renamedRecording)
@@ -82,10 +87,14 @@ class RecordingsRepository @Inject constructor(
                 }
                 return@withContext
             }
-            val fileName = "Saved_${srcFile.name}"
+            // Preserve original extension
+            val extension = srcFile.extension
+            val fileName = "Saved_${srcFile.nameWithoutExtension}.$extension"
+            val mimeType = if (extension.equals("m4a", true)) "audio/mp4" else "audio/wav"
+
             val contentValues = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-                put(MediaStore.MediaColumns.MIME_TYPE, "audio/wav")
+                put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/AllRecorder")
                     put(MediaStore.MediaColumns.IS_PENDING, 1)
@@ -122,13 +131,11 @@ class RecordingsRepository @Inject constructor(
     ) = withContext(Dispatchers.IO) {
         if (recording.processingStatus == Recording.STATUS_PROCESSING) return@withContext
 
-        // 1. Mark as Processing
         recordingDao.update(recording.copy(processingStatus = Recording.STATUS_PROCESSING))
 
         try {
             var inputPath = recording.filePath
 
-            // 2. Audio Enhancement (Optional)
             if (SettingsManager.asrEnhancementEnabled) {
                 onProgress(0f, "Enhancing audio...")
                 val enhancedPath = transcriptionOrchestrator.enhanceAudio(recording.filePath)
@@ -137,7 +144,6 @@ class RecordingsRepository @Inject constructor(
                 }
             }
 
-            // 3. Transcribe
             onProgress(0.1f, "Transcribing...")
             val segments = transcriptionOrchestrator.transcribe(
                 filePath = inputPath,
@@ -148,7 +154,6 @@ class RecordingsRepository @Inject constructor(
                 }
             )
 
-            // 4. Build Transcript String
             val sb = StringBuilder()
             segments.forEach { seg ->
                 val timeStr = String.format(Locale.US, "%.1fs - %.1fs", seg.start, seg.end)
@@ -157,13 +162,11 @@ class RecordingsRepository @Inject constructor(
             }
             val fullTranscript = sb.toString().trim()
 
-            // 5. Generate Embedding for Search
             onProgress(0.9f, "Indexing...")
             val vector = embeddingManager.generateEmbedding(fullTranscript)
 
-            // 6. Save Result
             val updated = recording.copy(
-                transcript = fullTranscript, // [FIX] Changed from 'transcription' to 'transcript'
+                transcript = fullTranscript,
                 embedding = vector,
                 processingStatus = Recording.STATUS_COMPLETED
             )
@@ -180,8 +183,6 @@ class RecordingsRepository @Inject constructor(
 
     suspend fun performSemanticSearch(query: String): List<Recording> {
         val queryVector = embeddingManager.generateEmbedding(query) ?: return emptyList()
-
-        // IMPORTANT: Ensure you have added 'getAllRecordingsForSearch()' to your RecordingDao
         val allRecs = recordingDao.getAllRecordingsForSearch()
 
         return allRecs.mapNotNull { rec ->
@@ -192,5 +193,9 @@ class RecordingsRepository @Inject constructor(
             } else null
         }.sortedByDescending { it.second }
             .map { it.first }
+    }
+    suspend fun updateTranscript(recording: Recording, newText: String) = withContext(Dispatchers.IO) {
+        val updated = recording.copy(transcript = newText)
+        recordingDao.update(updated)
     }
 }

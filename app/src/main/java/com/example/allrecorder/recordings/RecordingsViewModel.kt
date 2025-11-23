@@ -1,17 +1,21 @@
 package com.example.allrecorder.recordings
 
 import android.app.Application
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
 import android.media.MediaPlayer
 import android.os.Build
-import android.util.Log
+import android.os.IBinder
+import android.widget.EditText
+import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AlertDialog
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.MediatorLiveData
-import androidx.lifecycle.MutableLiveData
-import androidx.lifecycle.asLiveData
 import androidx.lifecycle.viewModelScope
 import com.example.allrecorder.*
 import com.example.allrecorder.data.RecordingsRepository
@@ -19,20 +23,10 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import java.io.File
 import javax.inject.Inject
-import android.content.Context
-import android.content.ServiceConnection
-import android.content.ComponentName
-import android.content.Intent
-import android.os.IBinder
-import android.widget.EditText
-import androidx.annotation.RequiresApi
 
 @HiltViewModel
 class RecordingsViewModel @Inject constructor(
@@ -40,54 +34,15 @@ class RecordingsViewModel @Inject constructor(
     private val repository: RecordingsRepository
 ) : AndroidViewModel(application) {
 
+    // --- SERVICE BINDING & AUDIO DATA ---
     var isServiceRecording by mutableStateOf(RecordingService.isRecording)
         private set
-
-    private var mediaPlayer: MediaPlayer? = null
-    private val _playerState = MutableStateFlow(PlayerState())
-    val playerState: StateFlow<PlayerState> = _playerState.asStateFlow()
-    private var progressUpdateJob: Job? = null
-
-    private val _audioData = MutableStateFlow(ByteArray(0))
-    val audioData: StateFlow<ByteArray> = _audioData.asStateFlow()
 
     private var recordingService: RecordingService? = null
     private var isBound by mutableStateOf(false)
 
-    private val _searchResults = MutableStateFlow<List<RecordingUiState>?>(null)
-    val searchResults: StateFlow<List<RecordingUiState>?> = _searchResults.asStateFlow()
-
-    // --- DATA: Amplitudes & Speeds ---
-    private val amplitudeCache = mutableMapOf<Long, List<Int>>()
-    private val playbackSpeeds = mutableMapOf<Long, Float>()
-    private val _uiRefreshTrigger = MutableLiveData<Unit>()
-
-
-    private data class TranscriptionProgress(
-        val recordingId: Long? = null,
-        val progress: Float = 0f,
-        val message: String = ""
-    )
-
-    data class RecordingUiState(
-        val recording: Recording,
-        val liveProgress: Float? = null,
-        val liveMessage: String? = null,
-        val isSemanticMatch: Boolean = false,
-        val amplitudes: List<Int> = emptyList(),
-        val playbackSpeed: Float = 1.0f
-    )
-
-    private val _transcriptionProgress = MutableStateFlow(TranscriptionProgress())
-    private val _transcriptionProgressLiveData = _transcriptionProgress.asLiveData()
-
-    // --- All Recordings Sources ---
-    private val _allRecordingsInternal = repository.getAllRecordings().asLiveData()
-    val allRecordings: MediatorLiveData<List<RecordingUiState>> = MediatorLiveData()
-
-    // --- Starred Recordings Sources ---
-    private val _starredRecordingsInternal = repository.getStarredRecordings().asLiveData()
-    val starredRecordings: MediatorLiveData<List<RecordingUiState>> = MediatorLiveData()
+    private val _audioData = MutableStateFlow(ByteArray(0))
+    val audioData: StateFlow<ByteArray> = _audioData.asStateFlow()
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -95,38 +50,83 @@ class RecordingsViewModel @Inject constructor(
             recordingService = binder.getService()
             isBound = true
             viewModelScope.launch {
-                recordingService?.audioDataFlow?.collectLatest {
-                    _audioData.value = it
-                }
+                recordingService?.audioDataFlow?.collectLatest { _audioData.value = it }
             }
         }
-
         override fun onServiceDisconnected(name: ComponentName?) {
             isBound = false
             recordingService = null
         }
     }
 
+    // --- PLAYBACK STATE ---
+    private var mediaPlayer: MediaPlayer? = null
+    private val _playerState = MutableStateFlow(PlayerState())
+    val playerState: StateFlow<PlayerState> = _playerState.asStateFlow()
+    private var progressUpdateJob: Job? = null
+
+    // Cache
+    private val amplitudeCache = mutableMapOf<Long, List<Int>>()
+    private val playbackSpeeds = mutableMapOf<Long, Float>()
+
+    // --- FILTER & SEARCH STATE (PHASE 3.2 NEW) ---
+    private val _tagFilter = MutableStateFlow<String?>(null)
+    val tagFilter: StateFlow<String?> = _tagFilter.asStateFlow()
+
+    private val _searchQuery = MutableStateFlow("")
+    // We keep track of raw semantic results separately
+    private val _rawSemanticResults = MutableStateFlow<List<Recording>?>(null)
+
+    // --- TRANSCRIPTION PROGRESS ---
+    private data class TranscriptionProgress(
+        val recordingId: Long? = null,
+        val progress: Float = 0f,
+        val message: String = ""
+    )
+    private val _transcriptionProgress = MutableStateFlow(TranscriptionProgress())
+
+
+
+    val allRecordings = combine(
+        repository.getAllRecordings(),
+        _tagFilter,
+        _transcriptionProgress
+    ) { recordings, tag, progress ->
+        val filtered = if (tag != null) recordings.filter { it.tags.contains(tag) } else recordings
+        combineRecordingAndProgress(filtered, progress)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val availableTags: StateFlow<List<String>> = allRecordings.map { list ->
+        list.flatMap { it.recording.tags } // Flatten all tags from all recordings
+            .distinct()                    // Remove duplicates
+            .sorted()                      // Sort alphabetically
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    // 2. Starred Recordings (Filtered by Tag)
+    val starredRecordings = combine(
+        repository.getStarredRecordings(),
+        _tagFilter,
+        _transcriptionProgress
+    ) { recordings, tag, progress ->
+        val filtered = if (tag != null) recordings.filter { it.tags.contains(tag) } else recordings
+        combineRecordingAndProgress(filtered, progress)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    // 3. Search Results (Filtered by Tag + Query)
+    // If _rawSemanticResults is null, we return null (indicating no active search)
+    // If not null, we filter those results by the current tag.
+    val searchResults: StateFlow<List<RecordingUiState>?> = combine(
+        _rawSemanticResults,
+        _tagFilter,
+        _transcriptionProgress
+    ) { rawResults, tag, progress ->
+        if (rawResults == null) return@combine null
+
+        val filtered = if (tag != null) rawResults.filter { it.tags.contains(tag) } else rawResults
+        combineRecordingAndProgress(filtered, progress).map { it.copy(isSemanticMatch = true) }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+
     init {
-        val updateAll = {
-            val recs = _allRecordingsInternal.value ?: emptyList()
-            val prog = _transcriptionProgressLiveData.value ?: TranscriptionProgress()
-            allRecordings.value = combineRecordingAndProgress(recs, prog)
-        }
-        val updateStarred = {
-            val recs = _starredRecordingsInternal.value ?: emptyList()
-            val prog = _transcriptionProgressLiveData.value ?: TranscriptionProgress()
-            starredRecordings.value = combineRecordingAndProgress(recs, prog)
-        }
-
-        allRecordings.addSource(_allRecordingsInternal) { updateAll() }
-        allRecordings.addSource(_transcriptionProgressLiveData) { updateAll() }
-        allRecordings.addSource(_uiRefreshTrigger) { updateAll() }
-
-        starredRecordings.addSource(_starredRecordingsInternal) { updateStarred() }
-        starredRecordings.addSource(_transcriptionProgressLiveData) { updateStarred() }
-        starredRecordings.addSource(_uiRefreshTrigger) { updateStarred() }
-
+        // Monitor Service State
         viewModelScope.launch {
             while(true) {
                 if (isServiceRecording != RecordingService.isRecording) {
@@ -137,38 +137,70 @@ class RecordingsViewModel @Inject constructor(
         }
     }
 
-    // --- REPO DELEGATION ---
-    fun loadAmplitudes(recording: Recording) {
-        // 1. Check Cache first to avoid redundant work
-        if (amplitudeCache.containsKey(recording.id)) return
+    // --- TAG MANAGEMENT (PHASE 3.2 NEW) ---
 
-        // 2. [FIX] Check Format: If not WAV, skip extraction safely
-        if (!recording.filePath.endsWith(".wav", ignoreCase = true)) {
-            // Cache an empty list. This tells the UI "No waveform available",
-            // causing it to fall back to the standard Slider.
-            synchronized(amplitudeCache) { amplitudeCache[recording.id] = emptyList() }
-            _uiRefreshTrigger.postValue(Unit)
-            return
-        }
+    fun setTagFilter(tag: String?) {
+        _tagFilter.value = tag
+    }
 
-        // 3. Proceed with expensive extraction ONLY for WAV files
-        viewModelScope.launch {
-            val amps = repository.loadAmplitudes(recording)
-            synchronized(amplitudeCache) { amplitudeCache[recording.id] = amps }
-            _uiRefreshTrigger.postValue(Unit)
+    fun addTag(recording: Recording, newTag: String) {
+        if (newTag.isBlank() || recording.tags.contains(newTag)) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val updatedTags = recording.tags + newTag.trim()
+            repository.updateRecording(recording.copy(tags = updatedTags))
         }
     }
 
+    fun removeTag(recording: Recording, tagToRemove: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val updatedTags = recording.tags - tagToRemove
+            repository.updateRecording(recording.copy(tags = updatedTags))
+        }
+    }
+
+    // --- SEARCH LOGIC ---
+
+    fun performSemanticSearch(query: String) {
+        _searchQuery.value = query
+        if (query.isBlank()) {
+            _rawSemanticResults.value = null
+            return
+        }
+        viewModelScope.launch {
+            // This runs the expensive DB/Embedding search
+            val results = repository.performSemanticSearch(query)
+            _rawSemanticResults.value = results
+        }
+    }
+
+    // --- REPO DELEGATION ---
+    fun loadAmplitudes(recording: Recording) {
+        if (amplitudeCache.containsKey(recording.id)) return
+
+        // Safety check for M4A/Compressed files
+        if (!recording.filePath.endsWith(".wav", ignoreCase = true)) {
+            synchronized(amplitudeCache) { amplitudeCache[recording.id] = emptyList() }
+            // Force flow update by touching a state if needed, but the UI should handle empty
+            return
+        }
+
+        viewModelScope.launch {
+            val amps = repository.loadAmplitudes(recording)
+            synchronized(amplitudeCache) { amplitudeCache[recording.id] = amps }
+            // To trigger UI update, we might need a more reactive cache,
+            // but for now, re-emitting allRecordings or similar is hard without Flow.
+            // WORKAROUND: Toggle speed trivially to force refresh or use a MutableStateFlow for cache version.
+            _transcriptionProgress.value = _transcriptionProgress.value.copy() // Dummy update to trigger combiners
+        }
+    }
 
     fun renameRecording(context: Context, recording: Recording) {
         stopPlayback()
-        val editText = EditText(context).apply { setText(java.io.File(recording.filePath).nameWithoutExtension) }
+        val editText = EditText(context).apply { setText(File(recording.filePath).nameWithoutExtension) }
         AlertDialog.Builder(context).setTitle("Rename").setView(editText).setPositiveButton("Rename") { _, _ ->
             val newName = editText.text.toString().trim()
             if (newName.isNotEmpty()) {
-                viewModelScope.launch {
-                    repository.renameRecording(recording, newName)
-                }
+                viewModelScope.launch { repository.renameRecording(recording, newName) }
             }
         }.setNegativeButton("Cancel", null).show()
     }
@@ -176,23 +208,17 @@ class RecordingsViewModel @Inject constructor(
     fun deleteRecording(context: Context, recording: Recording) {
         AlertDialog.Builder(context).setTitle("Delete").setMessage("Confirm delete?").setPositiveButton("Delete") { _, _ ->
             if (recording.id == _playerState.value.playingRecordingId) stopPlayback()
-            viewModelScope.launch {
-                repository.deleteRecording(recording)
-            }
+            viewModelScope.launch { repository.deleteRecording(recording) }
         }.setNegativeButton("Cancel", null).show()
     }
 
     fun toggleStar(recording: Recording) {
-        viewModelScope.launch {
-            repository.toggleStar(recording)
-        }
+        viewModelScope.launch { repository.toggleStar(recording) }
     }
 
     @RequiresApi(Build.VERSION_CODES.Q)
     fun saveRecordingAs(context: Context, recording: Recording) {
-        viewModelScope.launch {
-            repository.saveRecordingAs(recording)
-        }
+        viewModelScope.launch { repository.saveRecordingAs(recording) }
     }
 
     fun transcribeRecording(context: Context, recording: Recording) {
@@ -201,31 +227,12 @@ class RecordingsViewModel @Inject constructor(
             repository.transcribeRecording(recording) { progress, message ->
                 _transcriptionProgress.value = TranscriptionProgress(recording.id, progress, message)
             }
-            // Clear progress after short delay when done
             delay(2000)
             _transcriptionProgress.value = TranscriptionProgress()
         }
     }
 
-    fun performSemanticSearch(query: String) {
-        if (query.isBlank()) {
-            _searchResults.value = null
-            return
-        }
-        viewModelScope.launch {
-            val results = repository.performSemanticSearch(query)
-            _searchResults.value = results.map { rec ->
-                RecordingUiState(
-                    recording = rec,
-                    isSemanticMatch = true,
-                    amplitudes = amplitudeCache[rec.id] ?: emptyList(),
-                    playbackSpeed = playbackSpeeds[rec.id] ?: 1.0f
-                )
-            }
-        }
-    }
-
-    // --- PLAYBACK CONTROLS (Kept in ViewModel as it drives UI state directly) ---
+    // --- PLAYBACK CONTROLS ---
 
     fun onSeek(recording: Recording, progress: Float) {
         val currentId = _playerState.value.playingRecordingId
@@ -235,12 +242,7 @@ class RecordingsViewModel @Inject constructor(
             mediaPlayer?.release()
             mediaPlayer = null
             _playerState.update {
-                PlayerState(
-                    playingRecordingId = recording.id,
-                    isPlaying = false,
-                    currentPosition = newPos,
-                    maxDuration = recording.duration.toInt()
-                )
+                PlayerState(playingRecordingId = recording.id, isPlaying = false, currentPosition = newPos, maxDuration = recording.duration.toInt())
             }
         } else {
             _playerState.update { it.copy(currentPosition = newPos) }
@@ -251,20 +253,16 @@ class RecordingsViewModel @Inject constructor(
     fun togglePlaybackSpeed(recording: Recording) {
         val currentSpeed = playbackSpeeds[recording.id] ?: 1.0f
         val newSpeed = when (currentSpeed) {
-            1.0f -> 1.5f
-            1.5f -> 2.0f
-            2.0f -> 0.5f
-            else -> 1.0f
+            1.0f -> 1.5f; 1.5f -> 2.0f; 2.0f -> 0.5f; else -> 1.0f
         }
         playbackSpeeds[recording.id] = newSpeed
+
         if (_playerState.value.playingRecordingId == recording.id) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                try {
-                    mediaPlayer?.let { it.playbackParams = it.playbackParams.setSpeed(newSpeed) }
-                } catch (e: Exception) { e.printStackTrace() }
+                try { mediaPlayer?.let { it.playbackParams = it.playbackParams.setSpeed(newSpeed) } } catch (e: Exception) {}
             }
         }
-        _uiRefreshTrigger.value = Unit
+        _transcriptionProgress.value = _transcriptionProgress.value.copy() // Trigger refresh
     }
 
     fun onPlayPauseClicked(recording: Recording) {
@@ -284,13 +282,11 @@ class RecordingsViewModel @Inject constructor(
             try {
                 setDataSource(recording.filePath)
                 prepare()
-                if (isResume && _playerState.value.currentPosition > 0) {
-                    seekTo(_playerState.value.currentPosition)
-                }
+                if (isResume && _playerState.value.currentPosition > 0) seekTo(_playerState.value.currentPosition)
+
                 val speedToUse = playbackSpeeds[recording.id] ?: 1.0f
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    playbackParams = playbackParams.setSpeed(speedToUse)
-                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) playbackParams = playbackParams.setSpeed(speedToUse)
+
                 setOnCompletionListener { stopPlayback() }
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -300,9 +296,7 @@ class RecordingsViewModel @Inject constructor(
         }
 
         if (!isResume) {
-            _playerState.update {
-                it.copy(playingRecordingId = recording.id, maxDuration = recording.duration.toInt(), currentPosition = 0)
-            }
+            _playerState.update { it.copy(playingRecordingId = recording.id, maxDuration = recording.duration.toInt(), currentPosition = 0) }
         }
 
         mediaPlayer?.start()
@@ -343,11 +337,7 @@ class RecordingsViewModel @Inject constructor(
         stopUpdatingProgress()
         progressUpdateJob = viewModelScope.launch(Dispatchers.IO) {
             while (_playerState.value.isPlaying) {
-                mediaPlayer?.let {
-                    if (it.isPlaying) {
-                        _playerState.update { s -> s.copy(currentPosition = it.currentPosition) }
-                    }
-                }
+                mediaPlayer?.let { if (it.isPlaying) _playerState.update { s -> s.copy(currentPosition = it.currentPosition) } }
                 delay(50)
             }
         }
@@ -358,6 +348,8 @@ class RecordingsViewModel @Inject constructor(
         progressUpdateJob = null
     }
 
+
+    // --- UI STATE BUILDER ---
     private fun combineRecordingAndProgress(recordings: List<Recording>, progress: TranscriptionProgress): List<RecordingUiState> {
         return recordings.map { rec ->
             val amps = amplitudeCache[rec.id] ?: emptyList()
@@ -369,9 +361,23 @@ class RecordingsViewModel @Inject constructor(
         }
     }
 
-    fun bindService(context: Context) {
-        Intent(context, RecordingService::class.java).also { intent -> context.bindService(intent, connection, Context.BIND_AUTO_CREATE) }
+
+
+    fun updateTranscript(recording: Recording, newText: String) {
+        viewModelScope.launch {
+            repository.updateTranscript(recording, newText)
+        }
     }
+
+    fun exportTranscript(context: Context, recording: Recording, format: TranscriptExporter.Format) {
+        // Run on IO to prevent UI stutter during file I/O
+        viewModelScope.launch(Dispatchers.IO) {
+            TranscriptExporter.export(context, recording, format)
+        }
+    }
+
+    // Service Helpers
+    fun bindService(context: Context) { Intent(context, RecordingService::class.java).also { intent -> context.bindService(intent, connection, Context.BIND_AUTO_CREATE) } }
     fun unbindService(context: Context) { if (isBound) { context.unbindService(connection); isBound = false; recordingService = null } }
     fun toggleRecordingService(context: Context) {
         val intent = Intent(context, RecordingService::class.java)
@@ -382,8 +388,17 @@ class RecordingsViewModel @Inject constructor(
     override fun onCleared() {
         super.onCleared()
         stopPlayback()
-        unbindService(getApplication())
+        if (isBound) try { getApplication<Application>().unbindService(connection) } catch(e:Exception){}
     }
 
+    // Data Classes
     data class PlayerState(val playingRecordingId: Long? = null, val isPlaying: Boolean = false, val currentPosition: Int = 0, val maxDuration: Int = 0)
+    data class RecordingUiState(
+        val recording: Recording,
+        val liveProgress: Float? = null,
+        val liveMessage: String? = null,
+        val isSemanticMatch: Boolean = false,
+        val amplitudes: List<Int> = emptyList(),
+        val playbackSpeed: Float = 1.0f
+    )
 }

@@ -21,11 +21,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Label
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
@@ -54,6 +56,7 @@ import com.example.allrecorder.recordings.AudioVisualizer
 import com.example.allrecorder.recordings.RecordingsScreen
 import com.example.allrecorder.recordings.StarredRecordingsScreen
 import com.example.allrecorder.recordings.RecordingsViewModel
+import com.example.allrecorder.recordings.TagsScreen
 import com.example.allrecorder.ui.components.ModelManagementDialog
 import com.example.allrecorder.ui.components.ModelManagementViewModel
 // [FIX] Ensure BundleUiState is imported (if it's in a different package, though usually same package as VM)
@@ -66,7 +69,7 @@ import kotlinx.coroutines.launch
 import dagger.hilt.android.AndroidEntryPoint
 
 enum class Screen {
-    Home, Starred
+    Home, Starred, Tags
 }
 
 @AndroidEntryPoint
@@ -143,6 +146,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    @RequiresApi(Build.VERSION_CODES.Q)
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun MainContent(
@@ -162,6 +166,7 @@ class MainActivity : ComponentActivity() {
         val titleText = when(currentScreen) {
             Screen.Home -> "AllRecorder"
             Screen.Starred -> "Starred"
+            Screen.Tags -> "Browse Tags "
         }
 
         Scaffold(
@@ -298,6 +303,7 @@ class MainActivity : ComponentActivity() {
                     when(currentScreen) {
                         Screen.Home -> RecordingsScreen(viewModel = recordingsViewModel)
                         Screen.Starred -> StarredRecordingsScreen(viewModel = recordingsViewModel)
+                        Screen.Tags -> TagsScreen(viewModel = recordingsViewModel)
                     }
                 }
             }
@@ -337,7 +343,12 @@ class MainActivity : ComponentActivity() {
                     selected = currentScreen == Screen.Home,
                     onClick = { onScreenSelected(Screen.Home) }
                 )
-
+                NavigationDrawerItem(
+                    icon = { Icon(Icons.AutoMirrored.Filled.Label, null) }, // Use Label Icon
+                    label = { Text("Tags") },
+                    selected = currentScreen == Screen.Tags,
+                    onClick = { onScreenSelected(Screen.Tags) }
+                )
                 NavigationDrawerItem(
                     icon = { Icon(Icons.Default.Star, null) },
                     label = { Text("Starred") },

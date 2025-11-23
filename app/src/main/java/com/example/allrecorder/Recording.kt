@@ -10,16 +10,14 @@ data class Recording(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
     var filePath: String,
-    val startTime: Long, // Unix timestamp in milliseconds
-    val duration: Long, // Duration in milliseconds
-
-    // This is the new column
-    var processingStatus: Int = 0, // 0 = Not Started, 1 = Processing, 2 = Completed, -1 = Failed
-
-    var transcript: String? = null, // Raw transcript
+    val startTime: Long,
+    val duration: Long,
+    var processingStatus: Int = 0,
+    var transcript: String? = null,
     var speakerLabels: String? = null ,
     var embedding: List<Float>? = null,
-    var isStarred: Boolean = false
+    var isStarred: Boolean = false,
+    val tags: List<String> = emptyList()
 ) {
     // This makes the code easier to read
     companion object {
