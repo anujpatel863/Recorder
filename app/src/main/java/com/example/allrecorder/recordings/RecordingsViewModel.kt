@@ -1,20 +1,9 @@
 package com.example.allrecorder.recordings
 
 import android.app.Application
-import android.content.ContentValues
-import android.content.ComponentName
-import android.content.Context
-import android.content.Intent
-import android.content.ServiceConnection
 import android.media.MediaPlayer
-import android.media.PlaybackParams
 import android.os.Build
-import android.os.Environment
-import android.os.IBinder
-import android.provider.MediaStore
 import android.util.Log
-import android.widget.EditText
-import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -25,8 +14,8 @@ import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.asLiveData
 import androidx.lifecycle.viewModelScope
 import com.example.allrecorder.*
-import com.example.allrecorder.models.ModelManager
-import com.example.allrecorder.models.ModelRegistry
+import com.example.allrecorder.data.RecordingsRepository
+import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -36,16 +25,20 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import java.io.File
-import java.io.FileInputStream
+import javax.inject.Inject
+import android.content.Context
+import android.content.ServiceConnection
+import android.content.ComponentName
+import android.content.Intent
+import android.os.IBinder
+import android.widget.EditText
+import androidx.annotation.RequiresApi
 
-class RecordingsViewModel(application: Application) : AndroidViewModel(application) {
-
-    private val recordingDao: RecordingDao = AppDatabase.getDatabase(application).recordingDao()
-    private val modelManager = ModelManager(application)
-    private val embeddingManager = EmbeddingManager(application)
-
-    private var transcriptionOrchestrator: TranscriptionOrchestrator? = null
+@HiltViewModel
+class RecordingsViewModel @Inject constructor(
+    application: Application,
+    private val repository: RecordingsRepository
+) : AndroidViewModel(application) {
 
     var isServiceRecording by mutableStateOf(RecordingService.isRecording)
         private set
@@ -66,11 +59,7 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
 
     // --- DATA: Amplitudes & Speeds ---
     private val amplitudeCache = mutableMapOf<Long, List<Int>>()
-
-    // FIX: Store speed per Recording ID (Default 1.0f)
     private val playbackSpeeds = mutableMapOf<Long, Float>()
-
-    // Trigger to refresh UI when non-database data changes (amps/speeds)
     private val _uiRefreshTrigger = MutableLiveData<Unit>()
 
     private data class TranscriptionProgress(
@@ -85,18 +74,18 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
         val liveMessage: String? = null,
         val isSemanticMatch: Boolean = false,
         val amplitudes: List<Int> = emptyList(),
-        val playbackSpeed: Float = 1.0f // FIX: Speed is now part of individual state
+        val playbackSpeed: Float = 1.0f
     )
 
     private val _transcriptionProgress = MutableStateFlow(TranscriptionProgress())
     private val _transcriptionProgressLiveData = _transcriptionProgress.asLiveData()
 
     // --- All Recordings Sources ---
-    private val _allRecordingsInternal = recordingDao.getAllRecordings().asLiveData()
+    private val _allRecordingsInternal = repository.getAllRecordings().asLiveData()
     val allRecordings: MediatorLiveData<List<RecordingUiState>> = MediatorLiveData()
 
     // --- Starred Recordings Sources ---
-    private val _starredRecordingsInternal = recordingDao.getStarredRecordings().asLiveData()
+    private val _starredRecordingsInternal = repository.getStarredRecordings().asLiveData()
     val starredRecordings: MediatorLiveData<List<RecordingUiState>> = MediatorLiveData()
 
     private val connection = object : ServiceConnection {
@@ -118,7 +107,6 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     init {
-        // Helper to refresh lists
         val updateAll = {
             val recs = _allRecordingsInternal.value ?: emptyList()
             val prog = _transcriptionProgressLiveData.value ?: TranscriptionProgress()
@@ -130,10 +118,9 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
             starredRecordings.value = combineRecordingAndProgress(recs, prog)
         }
 
-        // Observers
         allRecordings.addSource(_allRecordingsInternal) { updateAll() }
         allRecordings.addSource(_transcriptionProgressLiveData) { updateAll() }
-        allRecordings.addSource(_uiRefreshTrigger) { updateAll() } // Listen for speed/amp changes
+        allRecordings.addSource(_uiRefreshTrigger) { updateAll() }
 
         starredRecordings.addSource(_starredRecordingsInternal) { updateStarred() }
         starredRecordings.addSource(_transcriptionProgressLiveData) { updateStarred() }
@@ -149,25 +136,88 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    // --- AMPLITUDES ---
+    // --- REPO DELEGATION ---
     fun loadAmplitudes(recording: Recording) {
         if (amplitudeCache.containsKey(recording.id)) return
-        viewModelScope.launch(Dispatchers.IO) {
-            val file = File(recording.filePath)
-            val amps = AudioUtils.extractAmplitudes(file)
+        viewModelScope.launch {
+            val amps = repository.loadAmplitudes(recording)
             synchronized(amplitudeCache) { amplitudeCache[recording.id] = amps }
             _uiRefreshTrigger.postValue(Unit)
         }
     }
 
-    // --- PLAYBACK CONTROLS ---
+    fun renameRecording(context: Context, recording: Recording) {
+        stopPlayback()
+        val editText = EditText(context).apply { setText(java.io.File(recording.filePath).nameWithoutExtension) }
+        AlertDialog.Builder(context).setTitle("Rename").setView(editText).setPositiveButton("Rename") { _, _ ->
+            val newName = editText.text.toString().trim()
+            if (newName.isNotEmpty()) {
+                viewModelScope.launch {
+                    repository.renameRecording(recording, newName)
+                }
+            }
+        }.setNegativeButton("Cancel", null).show()
+    }
+
+    fun deleteRecording(context: Context, recording: Recording) {
+        AlertDialog.Builder(context).setTitle("Delete").setMessage("Confirm delete?").setPositiveButton("Delete") { _, _ ->
+            if (recording.id == _playerState.value.playingRecordingId) stopPlayback()
+            viewModelScope.launch {
+                repository.deleteRecording(recording)
+            }
+        }.setNegativeButton("Cancel", null).show()
+    }
+
+    fun toggleStar(recording: Recording) {
+        viewModelScope.launch {
+            repository.toggleStar(recording)
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.Q)
+    fun saveRecordingAs(context: Context, recording: Recording) {
+        viewModelScope.launch {
+            repository.saveRecordingAs(recording)
+        }
+    }
+
+    fun transcribeRecording(context: Context, recording: Recording) {
+        viewModelScope.launch {
+            _transcriptionProgress.value = TranscriptionProgress(recording.id, 0f, "Starting...")
+            repository.transcribeRecording(recording) { progress, message ->
+                _transcriptionProgress.value = TranscriptionProgress(recording.id, progress, message)
+            }
+            // Clear progress after short delay when done
+            delay(2000)
+            _transcriptionProgress.value = TranscriptionProgress()
+        }
+    }
+
+    fun performSemanticSearch(query: String) {
+        if (query.isBlank()) {
+            _searchResults.value = null
+            return
+        }
+        viewModelScope.launch {
+            val results = repository.performSemanticSearch(query)
+            _searchResults.value = results.map { rec ->
+                RecordingUiState(
+                    recording = rec,
+                    isSemanticMatch = true,
+                    amplitudes = amplitudeCache[rec.id] ?: emptyList(),
+                    playbackSpeed = playbackSpeeds[rec.id] ?: 1.0f
+                )
+            }
+        }
+    }
+
+    // --- PLAYBACK CONTROLS (Kept in ViewModel as it drives UI state directly) ---
 
     fun onSeek(recording: Recording, progress: Float) {
         val currentId = _playerState.value.playingRecordingId
         val newPos = progress.toInt()
 
         if (currentId != recording.id) {
-            // Set as "Active but Paused" so UI updates
             mediaPlayer?.release()
             mediaPlayer = null
             _playerState.update {
@@ -184,7 +234,6 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    // FIX: Toggle speed for a SPECIFIC recording
     fun togglePlaybackSpeed(recording: Recording) {
         val currentSpeed = playbackSpeeds[recording.id] ?: 1.0f
         val newSpeed = when (currentSpeed) {
@@ -193,22 +242,14 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
             2.0f -> 0.5f
             else -> 1.0f
         }
-
-        // Save new speed
         playbackSpeeds[recording.id] = newSpeed
-
-        // If this specific recording is playing, apply immediately
         if (_playerState.value.playingRecordingId == recording.id) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 try {
-                    mediaPlayer?.let {
-                        it.playbackParams = it.playbackParams.setSpeed(newSpeed)
-                    }
+                    mediaPlayer?.let { it.playbackParams = it.playbackParams.setSpeed(newSpeed) }
                 } catch (e: Exception) { e.printStackTrace() }
             }
         }
-
-        // Update UI
         _uiRefreshTrigger.value = Unit
     }
 
@@ -223,23 +264,16 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
 
     private fun startPlayback(recording: Recording) {
         val isResume = _playerState.value.playingRecordingId == recording.id
-
-        if (!isResume) {
-            stopPlayback()
-        }
+        if (!isResume) stopPlayback()
 
         mediaPlayer = MediaPlayer().apply {
             try {
                 setDataSource(recording.filePath)
                 prepare()
-
                 if (isResume && _playerState.value.currentPosition > 0) {
                     seekTo(_playerState.value.currentPosition)
                 }
-
-                // FIX: Retrieve the specific speed for this recording
                 val speedToUse = playbackSpeeds[recording.id] ?: 1.0f
-
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                     playbackParams = playbackParams.setSpeed(speedToUse)
                 }
@@ -310,98 +344,10 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
         progressUpdateJob = null
     }
 
-    // ... [Standard Rename/Delete/Save/Transcribe methods remain unchanged] ...
-    fun renameRecording(context: Context, recording: Recording) {
-        stopPlayback()
-        val editText = EditText(context).apply { setText(File(recording.filePath).nameWithoutExtension) }
-        AlertDialog.Builder(context).setTitle("Rename").setView(editText).setPositiveButton("Rename") { _, _ ->
-            val newName = editText.text.toString().trim()
-            if (newName.isNotEmpty()) {
-                viewModelScope.launch(Dispatchers.IO) {
-                    val oldFile = File(recording.filePath)
-                    val newFile = File(oldFile.parent, "$newName.wav")
-                    if (oldFile.renameTo(newFile)) {
-                        val renamedRecording = recording.copy(filePath = newFile.absolutePath)
-                        recordingDao.update(renamedRecording)
-                    }
-                }
-            }
-        }.setNegativeButton("Cancel", null).show()
-    }
-
-    fun deleteRecording(context: Context, recording: Recording) {
-        AlertDialog.Builder(context).setTitle("Delete").setMessage("Confirm delete?").setPositiveButton("Delete") { _, _ ->
-            if (recording.id == _playerState.value.playingRecordingId) stopPlayback()
-            viewModelScope.launch(Dispatchers.IO) {
-                File(recording.filePath).delete()
-                recordingDao.delete(recording)
-            }
-        }.setNegativeButton("Cancel", null).show()
-    }
-
-    fun toggleStar(recording: Recording) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val updatedRecording = recording.copy(isStarred = !recording.isStarred)
-            recordingDao.update(updatedRecording)
-        }
-    }
-
-    fun saveRecordingAs(context: Context, recording: Recording) {
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val srcFile = File(recording.filePath)
-                if (!srcFile.exists()) {
-                    viewModelScope.launch(Dispatchers.Main) { Toast.makeText(context, "Error: File not found.", Toast.LENGTH_SHORT).show() }
-                    return@launch
-                }
-                val fileName = "Saved_${srcFile.name}"
-                val contentValues = ContentValues().apply {
-                    put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-                    put(MediaStore.MediaColumns.MIME_TYPE, "audio/wav")
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/AllRecorder")
-                        put(MediaStore.MediaColumns.IS_PENDING, 1)
-                    }
-                }
-                val resolver = context.contentResolver
-                val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
-                if (uri != null) {
-                    resolver.openOutputStream(uri).use { outputStream -> FileInputStream(srcFile).use { inputStream -> inputStream.copyTo(outputStream!!) } }
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        contentValues.clear()
-                        contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
-                        resolver.update(uri, contentValues, null, null)
-                    }
-                    viewModelScope.launch(Dispatchers.Main) { Toast.makeText(context, "Saved to Downloads/AllRecorder", Toast.LENGTH_LONG).show() }
-                }
-            } catch (e: Exception) {
-                viewModelScope.launch(Dispatchers.Main) { Toast.makeText(context, "Failed to save file.", Toast.LENGTH_SHORT).show() }
-            }
-        }
-    }
-
-    private fun getOrchestrator(): TranscriptionOrchestrator {
-        transcriptionOrchestrator?.let { return it }
-        val newOrchestrator = TranscriptionOrchestrator(getApplication())
-        transcriptionOrchestrator = newOrchestrator
-        return newOrchestrator
-    }
-
-    fun transcribeRecording(context: Context, recording: Recording) {
-        if (recording.processingStatus == Recording.STATUS_PROCESSING) return
-        viewModelScope.launch(Dispatchers.IO) {
-            // ... (Existing logic kept for brevity) ...
-            // Just ensure any UI state update uses copy() correctly
-        }
-    }
-    fun performSemanticSearch(query: String) { /* ... */ }
-
-    // FIX: Combine Amplitudes AND Speed into the UI State
     private fun combineRecordingAndProgress(recordings: List<Recording>, progress: TranscriptionProgress): List<RecordingUiState> {
         return recordings.map { rec ->
             val amps = amplitudeCache[rec.id] ?: emptyList()
-            val speed = playbackSpeeds[rec.id] ?: 1.0f // Get individual speed
-
+            val speed = playbackSpeeds[rec.id] ?: 1.0f
             if (rec.id == progress.recordingId)
                 RecordingUiState(rec, progress.progress, progress.message, amplitudes = amps, playbackSpeed = speed)
             else
@@ -422,8 +368,6 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
     override fun onCleared() {
         super.onCleared()
         stopPlayback()
-        transcriptionOrchestrator?.close()
-        embeddingManager.close()
         unbindService(getApplication())
     }
 

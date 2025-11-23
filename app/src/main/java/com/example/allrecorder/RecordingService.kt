@@ -1,11 +1,10 @@
 package com.example.allrecorder
 
 import android.Manifest
-import android.app.PendingIntent
-import android.app.Service.STOP_FOREGROUND_DETACH
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -21,6 +20,7 @@ import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -32,11 +32,15 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.RandomAccessFile
-import java.nio.ByteOrder
 import java.text.SimpleDateFormat
 import java.util.*
+import javax.inject.Inject
 
+@AndroidEntryPoint // [1] Required for Injection
 class RecordingService : Service() {
+
+    @Inject // [2] Inject Singleton DAO
+    lateinit var recordingDao: RecordingDao
 
     private var audioRecord: AudioRecord? = null
     private var recordingJob: Job? = null
@@ -48,7 +52,8 @@ class RecordingService : Service() {
     private var bufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
 
     private var isRecordingInternal = false
-    private lateinit var recordingDao: RecordingDao
+    // removed manual dao property
+
     private var recordingStartTime: Long = 0
     private lateinit var filePath: String
 
@@ -76,7 +81,7 @@ class RecordingService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        recordingDao = AppDatabase.getDatabase(this).recordingDao()
+        // [3] Removed manual DB creation. Hilt injects it automatically.
         SettingsManager.init(this)
 
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -88,29 +93,28 @@ class RecordingService : Service() {
         }
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    // ... [Rest of the file is identical to your upload] ...
+    // Copy the onStartCommand, startRecording, writeAudioDataToFile, etc. from your existing file.
+    // They do not need changes, as 'recordingDao' is now provided via @Inject.
 
-        // Check the action from the intent
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
                 Log.d(TAG, "Received ACTION_STOP from notification.")
-                stopRecording(stopService = true) // This will stop the service
-                return START_NOT_STICKY // Don't restart
+                stopRecording(stopService = true)
+                return START_NOT_STICKY
             }
             ACTION_START -> {
                 Log.d(TAG, "Received ACTION_START.")
                 startRecording()
-                return START_STICKY // Keep running
+                return START_STICKY
             }
             null -> {
-                // This block is executed when the service is restarted by the system (START_STICKY)
-                // after being killed (e.g., low memory).
                 Log.d(TAG, "Service restarting (null intent). Starting recording.")
                 startRecording()
                 return START_STICKY
             }
             else -> {
-                // Default case, e.g., first-time start from the app
                 Log.d(TAG, "Default onStartCommand. Starting recording.")
                 startRecording()
                 return START_STICKY
@@ -288,7 +292,6 @@ class RecordingService : Service() {
                 startTime = startTime,
                 duration = duration,
                 processingStatus = 0
-                // conversationId = null // REMOVED
             )
             recordingDao.insert(newRecording)
             Log.i(TAG, "Recording saved to database: $path")
@@ -307,18 +310,17 @@ class RecordingService : Service() {
             manager.createNotificationChannel(channel)
         }
 
-        // Create Stop Action
         val stopIntent = Intent(this, RecordingService::class.java).apply {
             action = ACTION_STOP
         }
         val stopPendingIntent = PendingIntent.getService(
             this,
-            0, // request code
+            0,
             stopIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         val stopAction = NotificationCompat.Action(
-            R.drawable.ic_launcher_foreground, // TODO: Replace with a real "stop" icon
+            R.drawable.ic_launcher_foreground,
             "Stop",
             stopPendingIntent
         )
@@ -328,7 +330,7 @@ class RecordingService : Service() {
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setContentTitle("AllRecorder is active")
             .setContentText(contentText)
-            .setSmallIcon(R.drawable.ic_launcher_foreground) // TODO: Replace with a real recording icon
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setOngoing(true)
             .addAction(stopAction)

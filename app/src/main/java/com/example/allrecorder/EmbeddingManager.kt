@@ -10,10 +10,14 @@ import com.google.mediapipe.tasks.text.textembedder.TextEmbedder.TextEmbedderOpt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-class EmbeddingManager(private val context: Context) {
+// [FIX] Accept ModelManager in constructor
+class EmbeddingManager(
+    private val context: Context,
+    private val modelManager: ModelManager
+) {
 
     private var textEmbedder: TextEmbedder? = null
-    private val modelManager = ModelManager(context)
+    // [FIX] Removed manual instantiation: private val modelManager = ModelManager(context)
 
     init {
         setupEmbedder()
@@ -21,20 +25,17 @@ class EmbeddingManager(private val context: Context) {
 
     private fun setupEmbedder() {
         try {
-            // 1. Get the spec for the embedding model
             val spec = ModelRegistry.getSpec("universal_sentence_encoder")
 
-            // 2. Check if it's downloaded
             if (!modelManager.isModelReady(spec)) {
                 Log.w("EmbeddingManager", "Model not downloaded yet. Semantic search unavailable.")
                 return
             }
 
-            // 3. Get the absolute path
             val modelPath = modelManager.getModelPath(spec)
 
             val baseOptions = BaseOptions.builder()
-                .setModelAssetPath(modelPath) // Works with absolute paths too
+                .setModelAssetPath(modelPath)
                 .build()
 
             val options = TextEmbedderOptions.builder()
@@ -49,13 +50,9 @@ class EmbeddingManager(private val context: Context) {
         }
     }
 
-    /**
-     * Generates a vector embedding for the given text.
-     */
     suspend fun generateEmbedding(text: String): List<Float>? = withContext(Dispatchers.Default) {
         if (text.isBlank()) return@withContext null
 
-        // Lazy init retry if it failed previously or model was just downloaded
         if (textEmbedder == null) {
             setupEmbedder()
             if (textEmbedder == null) return@withContext null

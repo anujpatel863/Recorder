@@ -33,4 +33,7 @@ interface RecordingDao {
 
     @Query("SELECT * FROM recordings WHERE id = :id")
     suspend fun getRecording(id: Long): Recording?
+    // Add to RecordingDoa.kt
+    @Query("SELECT * FROM recordings")
+    suspend fun getAllRecordingsForSearch(): List<Recording>
 }

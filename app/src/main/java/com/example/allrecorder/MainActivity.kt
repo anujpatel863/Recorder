@@ -3,12 +3,14 @@ package com.example.allrecorder
 import android.Manifest
 import android.app.Activity
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.RequiresApi
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -44,6 +46,8 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+// [FIX] Updated import for hiltViewModel (moved from androidx.hilt.navigation.compose)
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.example.allrecorder.models.ModelRegistry
 import com.example.allrecorder.recordings.AudioVisualizer
 import com.example.allrecorder.recordings.RecordingsScreen
@@ -51,16 +55,20 @@ import com.example.allrecorder.recordings.StarredRecordingsScreen
 import com.example.allrecorder.recordings.RecordingsViewModel
 import com.example.allrecorder.ui.components.ModelManagementDialog
 import com.example.allrecorder.ui.components.ModelManagementViewModel
+// [FIX] Ensure BundleUiState is imported (if it's in a different package, though usually same package as VM)
+import com.example.allrecorder.ui.components.BundleUiState
 import com.example.allrecorder.ui.theme.AllRecorderTheme
 import com.example.allrecorder.ui.theme.Monospace
 import com.example.allrecorder.ui.theme.RetroPrimary
 import com.example.allrecorder.ui.theme.RetroPrimaryDark
 import kotlinx.coroutines.launch
+import dagger.hilt.android.AndroidEntryPoint
 
 enum class Screen {
     Home, Starred
 }
 
+@AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
     private val requestPermissionLauncher =
@@ -73,6 +81,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -139,7 +148,8 @@ class MainActivity : ComponentActivity() {
         currentScreen: Screen,
         onOpenDrawer: () -> Unit
     ) {
-        val recordingsViewModel: RecordingsViewModel = viewModel()
+        // [FIX] hiltViewModel() now uses the correct import
+        val recordingsViewModel: RecordingsViewModel = hiltViewModel()
 
         val audioData by recordingsViewModel.audioData.collectAsState()
         val isRecording by remember { derivedStateOf { recordingsViewModel.isServiceRecording } }
@@ -308,7 +318,9 @@ class MainActivity : ComponentActivity() {
         }
 
         val context = LocalContext.current
-        val modelViewModel: ModelManagementViewModel = viewModel()
+
+        // [FIX] Inject ModelManagementViewModel properly
+        val modelViewModel: ModelManagementViewModel = hiltViewModel()
 
         ModalDrawerSheet(windowInsets = WindowInsets.systemBars) {
             Column(Modifier.verticalScroll(rememberScrollState())) {
@@ -382,12 +394,14 @@ class MainActivity : ComponentActivity() {
                 )
 
                 val noiseBundle = ModelRegistry.getBundle("bundle_enhancement")!!
+                // [FIX] This line should now compile correctly because BundleUiState is known
                 val noiseState by modelViewModel.getBundleState(noiseBundle).collectAsState()
 
                 NavigationDrawerItem(
                     label = { Text("Noise Reduction") },
                     selected = false,
                     badge = {
+                        // [FIX] These properties (isDownloading, isReady) are now valid
                         if (noiseState.isDownloading) {
                             CircularProgressIndicator(
                                 modifier = Modifier.size(24.dp),
@@ -606,6 +620,7 @@ class MainActivity : ComponentActivity() {
         ) == PackageManager.PERMISSION_GRANTED
     }
 
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private fun requestPermissions() {
         requestPermissionLauncher.launch(
             arrayOf(

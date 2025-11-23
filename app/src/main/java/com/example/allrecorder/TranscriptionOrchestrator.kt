@@ -10,6 +10,7 @@ import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
+// [FIX] This class was missing. It must be defined here so Repository can see it.
 data class FinalTranscriptSegment(
     val speakerId: Int,
     val start: Float,
@@ -17,7 +18,10 @@ data class FinalTranscriptSegment(
     val text: String
 )
 
-class TranscriptionOrchestrator(private val application: Application) {
+class TranscriptionOrchestrator(
+    private val application: Application,
+    private val modelManager: ModelManager
+) {
 
     private var offlineRecognizer: OfflineRecognizer? = null
     private var speakerDiarization: OfflineSpeakerDiarization? = null
@@ -26,15 +30,12 @@ class TranscriptionOrchestrator(private val application: Application) {
     private var currentAsrLanguage: String = ""
     private var currentAsrModel: String = ""
 
-    private val modelManager = ModelManager(application)
-
     companion object {
         private const val TAG = "TranscriptionOrch"
         private const val SAMPLE_RATE = 16000
     }
 
     init {
-        // Attempt to load optional features on init
         loadDiarizationModels()
     }
 
@@ -44,7 +45,6 @@ class TranscriptionOrchestrator(private val application: Application) {
             val embeddingSpec = ModelRegistry.getSpec("speaker_embed")
 
             if (modelManager.isModelReady(segmentationSpec) && modelManager.isModelReady(embeddingSpec)) {
-
                 val segmentationPath = modelManager.getModelPath(segmentationSpec)
                 val embeddingPath = modelManager.getModelPath(embeddingSpec)
 
@@ -53,7 +53,6 @@ class TranscriptionOrchestrator(private val application: Application) {
                 val embeddingConfig = SpeakerEmbeddingExtractorConfig(model = embeddingPath, numThreads = 1, debug = false)
                 val clusteringConfig = FastClusteringConfig(numClusters = -1, threshold = 0.5f)
 
-                // FIX: Restored values from OldTranscriptionOrchestrator (0.3f/0.5f)
                 val diarizationConfig = OfflineSpeakerDiarizationConfig(
                     segmentation = segmentationConfig,
                     embedding = embeddingConfig,
@@ -107,8 +106,6 @@ class TranscriptionOrchestrator(private val application: Application) {
         modelName: String,
         onProgress: (Float) -> Unit
     ): List<FinalTranscriptSegment> {
-
-        // --- 1. Initialize ASR (Essential) ---
         if (modelName != currentAsrModel || language != currentAsrLanguage || offlineRecognizer == null) {
             offlineRecognizer?.release()
             try {
@@ -116,7 +113,6 @@ class TranscriptionOrchestrator(private val application: Application) {
                 val decoderSpec = ModelRegistry.getSpec("${modelName}_decoder")
                 val tokensSpec = ModelRegistry.getSpec("whisper_tokens")
 
-                // Essential resources check (Double check)
                 if (!modelManager.isModelReady(encoderSpec) || !modelManager.isModelReady(decoderSpec) || !modelManager.isModelReady(tokensSpec)) {
                     Log.e(TAG, "Essential ASR files missing.")
                     return emptyList()
@@ -145,22 +141,15 @@ class TranscriptionOrchestrator(private val application: Application) {
         }
 
         val recognizer = offlineRecognizer ?: return emptyList()
-
-        // FIX: This now calls the corrected readWavFile
         val audioSamples = readWavFile(filePath) ?: return emptyList()
-
         val finalSegments = mutableListOf<FinalTranscriptSegment>()
-
-        // --- 2. Processing Strategy ---
-        val currentDiarizer = speakerDiarization // Use local ref to handle nulls
+        val currentDiarizer = speakerDiarization
 
         if (currentDiarizer != null) {
-            // Strategy A: Diarization Enabled
             try {
                 val segments = currentDiarizer.process(samples = audioSamples)
                 val total = segments.size.toFloat()
                 if (total == 0f) {
-                    // Fallback: Audio detected but no segments? Try plain decode.
                     val text = decodeSegment(recognizer, audioSamples)
                     if(text.isNotBlank()) finalSegments.add(FinalTranscriptSegment(0, 0f, audioSamples.size/SAMPLE_RATE.toFloat(), text))
                 } else {
@@ -176,18 +165,15 @@ class TranscriptionOrchestrator(private val application: Application) {
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Diarization crashed. Falling back to simple transcription.", e)
-                // Fallback Strategy
                 val text = decodeSegment(recognizer, audioSamples)
                 finalSegments.add(FinalTranscriptSegment(0, 0f, 0f, text))
             }
         } else {
-            // Strategy B: Minimum Resources (ASR Only)
             Log.i(TAG, "Running Minimum Resource Mode (ASR Only)")
-            onProgress(0.5f) // Show some progress
+            onProgress(0.5f)
             try {
                 val text = decodeSegment(recognizer, audioSamples)
                 if (text.isNotBlank()) {
-                    // Just one big segment
                     val duration = audioSamples.size / SAMPLE_RATE.toFloat()
                     finalSegments.add(FinalTranscriptSegment(0, 0f, duration, text))
                 }
@@ -209,7 +195,6 @@ class TranscriptionOrchestrator(private val application: Application) {
         return result.text.trim()
     }
 
-    // FIX: COMPLETELY REPLACED WITH THE ROBUST VERSION FROM OLD SCRIPT
     private fun readWavFile(filePath: String): FloatArray? {
         val file = File(filePath)
         if (!file.exists()) {
@@ -220,79 +205,45 @@ class TranscriptionOrchestrator(private val application: Application) {
         return try {
             FileInputStream(file).use { fileStream ->
                 val headerBuffer = ByteBuffer.allocate(12).order(ByteOrder.LITTLE_ENDIAN)
-
-                // 1. Read "RIFF", file size, "WAVE"
                 var bytesRead = fileStream.read(headerBuffer.array(), 0, 12)
-                if (bytesRead < 12) {
-                    Log.e(TAG, "File is too small to be a WAV file")
-                    return null
-                }
-
-                // Check for "RIFF" and "WAVE"
+                if (bytesRead < 12) return null
                 val riffId = headerBuffer.getInt(0)
                 val waveId = headerBuffer.getInt(8)
+                if (riffId != 0x46464952 || waveId != 0x45564157) return null
 
-                if (riffId != 0x46464952 || waveId != 0x45564157) {
-                    Log.e(TAG,"Not a valid RIFF/WAVE file. RIFF: ${riffId.toString(16)}, WAVE: ${waveId.toString(16)}")
-                    return null
-                }
-
-                // 2. Find the 'data' chunk
                 val chunkHeaderBuffer = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
                 var dataChunkSize: Int
 
                 while (true) {
                     chunkHeaderBuffer.clear()
                     bytesRead = fileStream.read(chunkHeaderBuffer.array())
-                    if (bytesRead < 8) {
-                        Log.e(TAG, "Reached end of file without finding 'data' chunk")
-                        return null
-                    }
+                    if (bytesRead < 8) return null
 
                     val chunkId = chunkHeaderBuffer.getInt(0)
                     val chunkSize = chunkHeaderBuffer.getInt(4)
 
-                    if (chunkId == 0x61746164) { // "data" chunk
+                    if (chunkId == 0x61746164) {
                         dataChunkSize = chunkSize
-                        Log.i(TAG, "'data' chunk found. Size: $dataChunkSize bytes")
                         break
                     }
-
-                    // Not 'data', skip this chunk's content
                     val skipped = fileStream.skip(chunkSize.toLong())
-                    if (skipped != chunkSize.toLong()) {
-                        Log.w(TAG, "Could not skip entire chunk")
-                    }
+                    if (skipped != chunkSize.toLong()) Log.w(TAG, "Could not skip entire chunk")
                 }
 
-                // 3. Read the audio data
-                if (dataChunkSize <= 0) {
-                    Log.e(TAG, "Data chunk has no size")
-                    return null
-                }
-
+                if (dataChunkSize <= 0) return null
                 val dataBytes = ByteArray(dataChunkSize)
                 bytesRead = fileStream.read(dataBytes)
 
-                if (bytesRead < dataChunkSize) {
-                    Log.w(TAG, "Warning: read $bytesRead bytes, but data chunk size was $dataChunkSize")
-                }
-
-                // 4. Convert 16-bit PCM bytes to FloatArray
                 val buffer = ByteBuffer.wrap(dataBytes, 0, bytesRead).order(ByteOrder.LITTLE_ENDIAN)
-                val numSamples = bytesRead / 2 // 2 bytes per 16-bit sample
+                val numSamples = bytesRead / 2
                 val floatArray = FloatArray(numSamples)
-
                 for (i in 0 until numSamples) {
-                    // Normalize to [-1.0, 1.0]
                     floatArray[i] = buffer.short.toFloat() / 32768.0f
                 }
-
-                Log.i(TAG, "Successfully read WAV file: $numSamples samples")
                 floatArray
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to read WAV file: $filePath", e)
+            Log.e(TAG, "Failed to read WAV file", e)
             null
         }
     }

@@ -7,9 +7,12 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.example.allrecorder.models.ModelBundle
 import com.example.allrecorder.models.ModelManager
+import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
+import javax.inject.Inject
 
+// [FIX] Define this class so other files can see it
 data class BundleUiState(
     val isReady: Boolean = false,
     val isDownloading: Boolean = false,
@@ -17,8 +20,12 @@ data class BundleUiState(
     val error: String? = null
 )
 
-class ModelManagementViewModel(application: Application) : AndroidViewModel(application) {
-    private val modelManager = ModelManager(application)
+@HiltViewModel
+class ModelManagementViewModel @Inject constructor(
+    application: Application,
+    private val modelManager: ModelManager
+) : AndroidViewModel(application) {
+
     private val workManager = WorkManager.getInstance(application)
 
     // Cache the flows to prevent recreating them constantly
@@ -31,10 +38,10 @@ class ModelManagementViewModel(application: Application) : AndroidViewModel(appl
     }
 
     private fun createBundleFlow(bundle: ModelBundle): StateFlow<BundleUiState> {
-        // 1. Observe WorkManager by BUNDLE TAG (See ModelManager.kt)
+        // 1. Observe WorkManager by BUNDLE TAG
         val workInfoFlow = workManager.getWorkInfosByTagFlow(bundle.id)
 
-        // 2. Create a ticker to periodically check file existence (handles manual deletions)
+        // 2. Create a ticker to periodically check file existence
         val fileCheckFlow = flow {
             while (true) {
                 emit(Unit)
@@ -44,9 +51,6 @@ class ModelManagementViewModel(application: Application) : AndroidViewModel(appl
 
         return combine(workInfoFlow, fileCheckFlow) { workInfos, _ ->
             val isReady = modelManager.isBundleReady(bundle)
-
-            // Logic: If files are ready, we are done.
-            // Unless a worker is actively running (maybe re-downloading/fixing).
 
             val activeWorkers = workInfos.filter { !it.state.isFinished }
             val isDownloading = activeWorkers.isNotEmpty()
@@ -67,7 +71,7 @@ class ModelManagementViewModel(application: Application) : AndroidViewModel(appl
 
             BundleUiState(
                 isReady = isReady,
-                isDownloading = isDownloading && !isReady, // Only show downloading if not ready
+                isDownloading = isDownloading && !isReady,
                 progress = progress
             )
         }.stateIn(
