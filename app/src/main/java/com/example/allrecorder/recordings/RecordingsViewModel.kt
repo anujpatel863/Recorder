@@ -62,6 +62,7 @@ class RecordingsViewModel @Inject constructor(
     private val playbackSpeeds = mutableMapOf<Long, Float>()
     private val _uiRefreshTrigger = MutableLiveData<Unit>()
 
+
     private data class TranscriptionProgress(
         val recordingId: Long? = null,
         val progress: Float = 0f,
@@ -138,13 +139,26 @@ class RecordingsViewModel @Inject constructor(
 
     // --- REPO DELEGATION ---
     fun loadAmplitudes(recording: Recording) {
+        // 1. Check Cache first to avoid redundant work
         if (amplitudeCache.containsKey(recording.id)) return
+
+        // 2. [FIX] Check Format: If not WAV, skip extraction safely
+        if (!recording.filePath.endsWith(".wav", ignoreCase = true)) {
+            // Cache an empty list. This tells the UI "No waveform available",
+            // causing it to fall back to the standard Slider.
+            synchronized(amplitudeCache) { amplitudeCache[recording.id] = emptyList() }
+            _uiRefreshTrigger.postValue(Unit)
+            return
+        }
+
+        // 3. Proceed with expensive extraction ONLY for WAV files
         viewModelScope.launch {
             val amps = repository.loadAmplitudes(recording)
             synchronized(amplitudeCache) { amplitudeCache[recording.id] = amps }
             _uiRefreshTrigger.postValue(Unit)
         }
     }
+
 
     fun renameRecording(context: Context, recording: Recording) {
         stopPlayback()

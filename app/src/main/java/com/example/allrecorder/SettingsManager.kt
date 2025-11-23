@@ -13,6 +13,11 @@ object SettingsManager {
     private const val ASR_LANGUAGE_KEY = "asr_language"
     private const val ASR_MODEL_KEY = "asr_model"
     private const val ASR_ENHANCEMENT_KEY = "asr_enhancement"
+    private const val RECORDING_FORMAT_KEY = "recording_format"
+    enum class RecordingFormat(val extension: String, val mimeType: String) {
+        WAV(".wav", "audio/wav"),
+        M4A(".m4a", "audio/mp4") // AAC encoding
+    }
 
     fun init(context: Context) {
         prefs = PreferenceManager.getDefaultSharedPreferences(context.applicationContext)
@@ -42,4 +47,16 @@ object SettingsManager {
         get() = prefs.getString(ASR_MODEL_KEY, "tiny") ?: "tiny"
     val asrEnhancementEnabled: Boolean // NEW
         get() = prefs.getBoolean(ASR_ENHANCEMENT_KEY, true)
+    var recordingFormat: RecordingFormat
+        get() {
+            val value = prefs.getString(RECORDING_FORMAT_KEY, RecordingFormat.M4A.name)
+            return try {
+                RecordingFormat.valueOf(value!!)
+            } catch (e: Exception) {
+                RecordingFormat.M4A
+            }
+        }
+        set(value) {
+            prefs.edit().putString(RECORDING_FORMAT_KEY, value.name).apply()
+        }
 }

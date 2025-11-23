@@ -10,7 +10,6 @@ import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-// [FIX] This class was missing. It must be defined here so Repository can see it.
 data class FinalTranscriptSegment(
     val speakerId: Int,
     val start: Float,
@@ -96,6 +95,7 @@ class TranscriptionOrchestrator(
             denoisedAudio.save(filename = tempFile.absolutePath)
             return tempFile.absolutePath
         } catch (e: Exception) {
+            Log.e(TAG, "Enhancer failed", e)
             return null
         }
     }
@@ -141,7 +141,12 @@ class TranscriptionOrchestrator(
         }
 
         val recognizer = offlineRecognizer ?: return emptyList()
-        val audioSamples = readWavFile(filePath) ?: return emptyList()
+        val audioSamples = AudioDecoder.decodeToPcm(filePath, SAMPLE_RATE)
+
+        if (audioSamples == null || audioSamples.isEmpty()) {
+            Log.e(TAG, "Failed to decode audio file or file is empty.")
+            return emptyList()
+        }
         val finalSegments = mutableListOf<FinalTranscriptSegment>()
         val currentDiarizer = speakerDiarization
 

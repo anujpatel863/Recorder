@@ -14,6 +14,7 @@ import androidx.annotation.RequiresApi
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -312,6 +313,7 @@ class MainActivity : ComponentActivity() {
         var showLanguageDialog by remember { mutableStateOf(false) }
         var showAsrModelDialog by remember { mutableStateOf(false) }
         var showManageDialog by remember { mutableStateOf(false) }
+        var showFormatDialog by remember { mutableStateOf(false) }
 
         var asrEnhancementEnabled by remember {
             mutableStateOf(SettingsManager.asrEnhancementEnabled)
@@ -371,6 +373,17 @@ class MainActivity : ComponentActivity() {
                 HorizontalDivider()
 
                 Text("Recording", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
+
+                NavigationDrawerItem(
+                    label = { Text("Audio Format") },
+                    badge = {
+                        // Show current setting as a badge (e.g., "M4A")
+                        Text(SettingsManager.recordingFormat.name, style = MaterialTheme.typography.labelSmall)
+                    },
+                    selected = false,
+                    onClick = { showFormatDialog = true }
+                )
+
                 NavigationDrawerItem(
                     label = { Text("Recording Chunk Duration") },
                     selected = false,
@@ -431,7 +444,16 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
-
+        if (showFormatDialog) {
+            RecordingFormatDialog(
+                onDismiss = { showFormatDialog = false },
+                onFormatSelected = { newFormat ->
+                    SettingsManager.recordingFormat = newFormat
+                    // Note: No need to manually trigger UI refresh for this,
+                    // as RecordingService reads this value directly when "Start" is clicked.
+                }
+            )
+        }
         // ... (Dialogs remain unchanged) ...
         if (showChunkDialog) {
             ListPreferenceDialog(
@@ -540,6 +562,61 @@ class MainActivity : ComponentActivity() {
                                         Icon(Icons.Default.CloudDownload, contentDescription = "Download")
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+            }
+        )
+    }
+    @Composable
+    fun RecordingFormatDialog(
+        onDismiss: () -> Unit,
+        onFormatSelected: (SettingsManager.RecordingFormat) -> Unit
+    ) {
+        val currentFormat = SettingsManager.recordingFormat
+
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text("Recording Format") },
+            text = {
+                Column {
+                    SettingsManager.RecordingFormat.values().forEach { format ->
+                        val isSelected = (format == currentFormat)
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    onFormatSelected(format)
+                                    onDismiss()
+                                }
+                                .padding(vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = isSelected,
+                                onClick = {
+                                    onFormatSelected(format)
+                                    onDismiss()
+                                }
+                            )
+                            Column(modifier = Modifier.padding(start = 12.dp)) {
+                                Text(
+                                    text = if (format == SettingsManager.RecordingFormat.WAV) "WAV (High Quality)" else "M4A (AAC)",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = if(isSelected) FontWeight.Bold else FontWeight.Normal
+                                )
+                                Text(
+                                    text = if (format == SettingsManager.RecordingFormat.WAV)
+                                        "Uncompressed. Large file size. Instant waveform."
+                                    else
+                                        "Compressed. Small file size (10x smaller).",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
                     }

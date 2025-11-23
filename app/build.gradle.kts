@@ -66,6 +66,7 @@ dependencies {
     // Use activity-compose for setContent
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.benchmark.traceprocessor)
+    implementation(libs.androidx.foundation)
 
     // Implement the Compose BOM
     val composeBom = platform(libs.androidx.compose.bom)
