@@ -11,23 +11,17 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Label
-import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.Label
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
@@ -48,8 +42,6 @@ import androidx.core.content.edit
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import androidx.lifecycle.viewmodel.compose.viewModel
-// [FIX] Updated import for hiltViewModel (moved from androidx.hilt.navigation.compose)
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.example.allrecorder.models.ModelRegistry
 import com.example.allrecorder.recordings.AudioVisualizer
@@ -59,14 +51,17 @@ import com.example.allrecorder.recordings.RecordingsViewModel
 import com.example.allrecorder.recordings.TagsScreen
 import com.example.allrecorder.ui.components.ModelManagementDialog
 import com.example.allrecorder.ui.components.ModelManagementViewModel
-// [FIX] Ensure BundleUiState is imported (if it's in a different package, though usually same package as VM)
-import com.example.allrecorder.ui.components.BundleUiState
 import com.example.allrecorder.ui.theme.AllRecorderTheme
 import com.example.allrecorder.ui.theme.Monospace
 import com.example.allrecorder.ui.theme.RetroPrimary
 import com.example.allrecorder.ui.theme.RetroPrimaryDark
 import kotlinx.coroutines.launch
 import dagger.hilt.android.AndroidEntryPoint
+import android.os.PowerManager
+import android.provider.Settings
+import android.net.Uri
+import android.content.Context
+import android.content.Intent
 
 enum class Screen {
     Home, Starred, Tags
@@ -107,8 +102,16 @@ class MainActivity : ComponentActivity() {
                 MainAppScreen()
             }
         }
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
+            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = Uri.parse("package:$packageName")
+            }
+            startActivity(intent)
+        }
     }
 
+    @RequiresApi(Build.VERSION_CODES.Q)
     @Composable
     private fun MainAppScreen() {
         val view = LocalView.current

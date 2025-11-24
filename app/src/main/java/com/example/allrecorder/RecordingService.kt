@@ -9,6 +9,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
@@ -20,6 +21,7 @@ import android.os.PowerManager
 import android.util.Log
 import androidx.annotation.RequiresPermission
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
@@ -48,7 +50,7 @@ class RecordingService : Service() {
     private var mediaRecorder: MediaRecorder? = null
 
     private var recordingJob: Job? = null
-    private val scope = CoroutineScope(Dispatchers.IO) // Service Scope
+    private val scope = CoroutineScope(Dispatchers.IO)
 
     // --- WAV Configuration ---
     private val sampleRate = 16000
@@ -86,27 +88,67 @@ class RecordingService : Service() {
     override fun onCreate() {
         super.onCreate()
         SettingsManager.init(this)
+
+        // [MODERNIZATION] Create the notification channel immediately
+        createNotificationChannel()
+
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        // [FIX] Use PARTIAL_WAKE_LOCK to keep CPU running even if screen is off
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AllRecorder::RecordingWakeLock").apply {
             setReferenceCounted(false)
         }
     }
 
+    // [CRITICAL] Handle "Clear All" / Swipe away from Recents
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        // This ensures the service restarts if the system kills the process when the UI is removed
+        val restartServiceIntent = Intent(applicationContext, this.javaClass).apply {
+            setPackage(packageName)
+            action = ACTION_START
+        }
+        val restartServicePendingIntent = PendingIntent.getService(
+            applicationContext, 1, restartServiceIntent, PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        // Restart after 1 second
+        val alarmService = applicationContext.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+        alarmService.set(
+            android.app.AlarmManager.ELAPSED_REALTIME,
+            android.os.SystemClock.elapsedRealtime() + 1000,
+            restartServicePendingIntent
+        )
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
-                // [FIX] Launch coroutine to handle suspend function
                 scope.launch { stopRecording(stopService = true) }
                 return START_NOT_STICKY
             }
             ACTION_START, null -> {
+                // [FIX] Ensure we are in foreground immediately to prevent ANR/Crash
+                startForegroundSafely()
                 startRecording()
-                return START_STICKY
+                return START_STICKY // [CRITICAL] Tells system to recreate service if killed
             }
             else -> {
                 startRecording()
                 return START_STICKY
             }
+        }
+    }
+
+    private fun startForegroundSafely() {
+        try {
+            val notification = createNotification(isRecording = true)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start foreground", e)
         }
     }
 
@@ -117,7 +159,14 @@ class RecordingService : Service() {
             return
         }
 
-        try { wakeLock?.acquire(10*60*1000L) } catch (e: Exception) {}
+        // [FIX] Acquire WakeLock INDEFINITELY. Previous code had 10*60*1000L timeout.
+        try {
+            if (wakeLock?.isHeld == false) {
+                wakeLock?.acquire()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Wakelock error", e)
+        }
 
         currentFormat = SettingsManager.recordingFormat
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
@@ -135,12 +184,14 @@ class RecordingService : Service() {
             isRecording = true
             recordingStartTime = System.currentTimeMillis()
 
-            startForeground(NOTIFICATION_ID, createNotification(isRecording = true))
+            // Update notification content
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.notify(NOTIFICATION_ID, createNotification(isRecording = true))
+
             scheduleNextChunk()
 
         } catch (e: Exception) {
             Log.e(TAG, "Start recording failed", e)
-            // [FIX] Launch stop if start fails
             scope.launch { stopRecording(stopService = true) }
         }
     }
@@ -161,6 +212,7 @@ class RecordingService : Service() {
             setAudioSource(MediaRecorder.AudioSource.MIC)
             setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
             setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            // [OPTIONAL] Lower bitrate slightly for 24/7 size efficiency if desired
             setAudioEncodingBitRate(64000)
             setAudioSamplingRate(16000)
             setOutputFile(path)
@@ -175,6 +227,7 @@ class RecordingService : Service() {
         var totalBytesWritten = 0L
         try {
             while (isRecordingInternal) {
+                // Blocking read is fine here inside IO dispatcher
                 val read = audioRecord?.read(data, 0, bufferSize) ?: 0
                 if (read > 0) {
                     _audioDataFlow.value = data.clone()
@@ -192,7 +245,6 @@ class RecordingService : Service() {
         }
     }
 
-    // [FIX] Made this function SUSPEND so we can wait for jobs and DB
     private suspend fun stopRecording(stopService: Boolean = true) {
         if (!isRecordingInternal) return
 
@@ -201,11 +253,11 @@ class RecordingService : Service() {
         cancelChunking()
 
         val duration = System.currentTimeMillis() - recordingStartTime
-        val savedPath = filePath // Copy for safe keeping
+        val savedPath = filePath
 
         try {
             if (currentFormat == SettingsManager.RecordingFormat.WAV) {
-                stopWavEngine() // This is suspend, now valid
+                stopWavEngine()
             } else {
                 stopM4aEngine()
             }
@@ -213,13 +265,15 @@ class RecordingService : Service() {
             Log.e(TAG, "Error stopping recorder", e)
         }
 
-        // [FIX] Now calling DB insert inside suspend function is valid
         saveRecordingToDatabase(savedPath, recordingStartTime, duration)
 
+        // [FIX] Release WakeLock only if we are actually stopping the service,
+        // OR if we are just chunking (restarting immediately) we might want to keep it.
+        // But safe practice is to release and re-acquire in start().
         try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (e: Exception) {}
 
         if (stopService) {
-            stopForeground(STOP_FOREGROUND_DETACH)
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         } else {
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -227,14 +281,13 @@ class RecordingService : Service() {
         }
     }
 
-    // [FIX] Marked as suspend because it calls join()
     private suspend fun stopWavEngine() {
         audioRecord?.apply {
             try { stop() } catch (e: Exception) {}
             release()
         }
         audioRecord = null
-        recordingJob?.join() // Wait for file writer to finish
+        recordingJob?.join()
         recordingJob = null
     }
 
@@ -246,18 +299,19 @@ class RecordingService : Service() {
         mediaRecorder = null
     }
 
-    // [FIX] Made suspend to support DAO call
     private suspend fun saveRecordingToDatabase(path: String, startTime: Long, duration: Long) {
         val newRecording = Recording(filePath = path, startTime = startTime, duration = duration, processingStatus = 0)
-        recordingDao.insert(newRecording) // Suspend call OK here
+        recordingDao.insert(newRecording)
     }
 
     private fun scheduleNextChunk() {
         val chunkDurationMillis = SettingsManager.chunkDurationMillis
+        // [ADVICE] For 24/7, ensure chunkDurationMillis is set (e.g., 1 hour = 3600000L)
+        // to prevent single massive files that are hard to open.
         if (chunkDurationMillis > 0) {
             chunkRunnable = Runnable {
-                // [FIX] Launch coroutine to ensure sequential execution: Stop -> Start
                 scope.launch {
+                    Log.d(TAG, "Chunking recording...")
                     stopRecording(stopService = false)
                     startRecording()
                 }
@@ -279,11 +333,36 @@ class RecordingService : Service() {
         super.onDestroy()
     }
 
-    // ... (Keep createNotification, binder, writePlaceholderWavHeader, updateWavHeader as they were) ...
-    // NOTE: Be sure to keep the Helper methods for WAV Header!
-    // Just omitting here for brevity, but they must be in the file.
+    override fun onBind(intent: Intent?): IBinder = binder
 
-    // --- Copied helpers for completeness if you need them ---
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(NOTIFICATION_CHANNEL_ID, "Recording Service", NotificationManager.IMPORTANCE_LOW)
+            channel.setShowBadge(false)
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        }
+    }
+
+    private fun createNotification(isRecording: Boolean = true): Notification {
+        val stopIntent = Intent(this, RecordingService::class.java).apply { action = ACTION_STOP }
+        val stopPendingIntent = PendingIntent.getService(this, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+
+        // Open App Intent
+        val openIntent = Intent(this, MainActivity::class.java)
+        val openPendingIntent = PendingIntent.getActivity(this, 0, openIntent, PendingIntent.FLAG_IMMUTABLE)
+
+        return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
+            .setContentTitle("AllRecorder 24/7")
+            .setContentText(if (isRecording) "Recording continuously..." else "Saving...")
+            .setSmallIcon(R.drawable.ic_launcher_foreground) // Ensure this resource exists
+            .setOngoing(true)
+            .setContentIntent(openPendingIntent)
+            .addAction(R.drawable.ic_launcher_foreground, "Stop", stopPendingIntent)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+            .build()
+    }
+
+    // ... (Keep existing writePlaceholderWavHeader and updateWavHeader) ...
     @Throws(IOException::class)
     private fun writePlaceholderWavHeader(file: File) {
         FileOutputStream(file).use { out -> out.write(ByteArray(44)) }
@@ -307,24 +386,5 @@ class RecordingService : Service() {
         header[36] = 'd'.code.toByte(); header[37] = 'a'.code.toByte(); header[38] = 't'.code.toByte(); header[39] = 'a'.code.toByte()
         header[40] = (dataSize and 0xff).toByte(); header[41] = (dataSize shr 8 and 0xff).toByte(); header[42] = (dataSize shr 16 and 0xff).toByte(); header[43] = (dataSize shr 24 and 0xff).toByte()
         RandomAccessFile(file, "rw").use { raf -> raf.seek(0); raf.write(header) }
-    }
-
-    override fun onBind(intent: Intent?): IBinder = binder
-
-    private fun createNotification(isRecording: Boolean = true): Notification {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(NOTIFICATION_CHANNEL_ID, "Recording Service", NotificationManager.IMPORTANCE_LOW)
-            channel.setShowBadge(false)
-            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
-        }
-        val stopIntent = Intent(this, RecordingService::class.java).apply { action = ACTION_STOP }
-        val stopPendingIntent = PendingIntent.getService(this, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setContentTitle("AllRecorder is active")
-            .setContentText(if (isRecording) "Recording (${currentFormat.name})..." else "Saving chunk...")
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setOngoing(true)
-            .addAction(R.drawable.ic_launcher_foreground, "Stop", stopPendingIntent)
-            .build()
     }
 }
