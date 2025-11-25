@@ -12,19 +12,24 @@ class BootReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
-            Log.i(TAG, "Boot completed. Starting RecordingService.")
+            Log.i(TAG, "Boot completed.")
+
+            // Ensure Settings are loaded
+            SettingsManager.init(context)
+
+            // [NEW] Check if the user actually wants to record on boot
+            if (!SettingsManager.autoRecordOnBoot) {
+                Log.i(TAG, "Auto-record on boot is DISABLED. Skipping.")
+                return
+            }
+
+            Log.i(TAG, "Auto-record on boot is ENABLED. Starting RecordingService.")
             try {
                 val serviceIntent = Intent(context, RecordingService::class.java).apply {
-                    // Add ACTION_START to be explicit
                     action = RecordingService.ACTION_START
                 }
 
-                // Android O (8.0) and higher require startForegroundService
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(serviceIntent)
-                } else {
-                    context.startService(serviceIntent)
-                }
+                context.startForegroundService(serviceIntent)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start service on boot", e)
             }

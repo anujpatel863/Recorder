@@ -229,12 +229,15 @@ class MainActivity : ComponentActivity() {
                                 trailingIcon = {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         // Semantic Search Indicator
-                                        Icon(
-                                            imageVector = Icons.Default.AutoAwesome,
-                                            contentDescription = "Semantic Search Active",
-                                            tint = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.6f),
-                                            modifier = Modifier.size(20.dp)
-                                        )
+                                        // [FIX] Only show icon if semantic search is enabled
+                                        if (SettingsManager.semanticSearchEnabled) {
+                                            Icon(
+                                                imageVector = Icons.Default.AutoAwesome,
+                                                contentDescription = "Semantic Search Active",
+                                                tint = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.6f),
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
 
                                         if (searchQuery.isNotEmpty()) {
                                             IconButton(onClick = {
@@ -385,6 +388,13 @@ class MainActivity : ComponentActivity() {
                 NavigationDrawerItem(
                     label = { Text("Auto-Record on Launch") },
                     badge = { Switch(checked = autoRecordState, onCheckedChange = { autoRecordState = it; SettingsManager.autoRecordOnLaunch = it }) },
+                    selected = false,
+                    onClick = { }
+                )
+                var autoRecordBootState by remember { mutableStateOf(SettingsManager.autoRecordOnBoot) }
+                NavigationDrawerItem(
+                    label = { Text("Auto-Record on Device Boot") },
+                    badge = { Switch(checked = autoRecordBootState, onCheckedChange = { autoRecordBootState = it; SettingsManager.autoRecordOnBoot = it }) },
                     selected = false,
                     onClick = { }
                 )

@@ -58,11 +58,59 @@ fun RecordingsScreen(
     val searchResults by viewModel.searchResults.collectAsState()
     val currentTagFilter by viewModel.tagFilter.collectAsState()
 
+    // [NEW] Re-indexing UI State
+    val showReindexDialog = viewModel.showReindexDialog
+    val isReindexing = viewModel.isReindexing
+    val reindexProgress = viewModel.reindexProgress
+
     val recordingsToShow = searchResults ?: recordings
 
     DisposableEffect(Unit) {
         viewModel.bindService(context)
         onDispose { viewModel.unbindService(context) }
+    }
+
+    // [NEW] Dialogs for Backfill/Re-indexing
+    if (showReindexDialog) {
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissReindexDialog() },
+            title = { Text("Update Search Index") },
+            text = { Text("Some recordings are missing semantic search data. Generate embeddings now to enable smart search for all items?") },
+            confirmButton = {
+                Button(onClick = { viewModel.startReindexing() }) {
+                    Text("Update")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.dismissReindexDialog() }) {
+                    Text("Later")
+                }
+            }
+        )
+    }
+
+    if (isReindexing) {
+        AlertDialog(
+            onDismissRequest = {}, // Prevent dismissal while processing
+            title = { Text("Indexing...") },
+            text = {
+                Column {
+                    Text("Generating embeddings for older recordings...")
+                    Spacer(Modifier.height(16.dp))
+                    LinearProgressIndicator(
+                        progress = { reindexProgress },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "${(reindexProgress * 100).toInt()}%",
+                        modifier = Modifier.align(Alignment.End),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            },
+            confirmButton = {}
+        )
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -289,10 +337,7 @@ fun RecordingItem(
                     Text(File(recording.filePath).name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(formatDuration(recording.duration), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        if (uiState.isSemanticMatch) {
-                            Spacer(Modifier.width(8.dp))
-                            Icon(Icons.Default.AutoAwesome, "Match", tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(16.dp))
-                        }
+
                     }
                 }
                 IconButton(onClick = onToggleStar) {

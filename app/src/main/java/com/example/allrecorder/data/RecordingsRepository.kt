@@ -163,7 +163,13 @@ class RecordingsRepository @Inject constructor(
             val fullTranscript = sb.toString().trim()
 
             onProgress(0.9f, "Indexing...")
-            val vector = embeddingManager.generateEmbedding(fullTranscript)
+
+            // [UPDATED] Respect Semantic Search Setting
+            val vector = if (SettingsManager.semanticSearchEnabled) {
+                embeddingManager.generateEmbedding(fullTranscript)
+            } else {
+                null
+            }
 
             val updated = recording.copy(
                 transcript = fullTranscript,
@@ -182,6 +188,18 @@ class RecordingsRepository @Inject constructor(
     }
 
     suspend fun performSemanticSearch(query: String): List<Recording> {
+        // [UPDATED] Hybrid Search Logic
+
+        // 1. If Semantic Search is DISABLED, fallback to simple text search.
+        if (!SettingsManager.semanticSearchEnabled) {
+            val allRecs = recordingDao.getAllRecordingsForSearch()
+            return allRecs.filter { rec ->
+                rec.transcript?.contains(query, ignoreCase = true) == true ||
+                        File(rec.filePath).name.contains(query, ignoreCase = true)
+            }
+        }
+
+        // 2. If Semantic Search is ENABLED, perform vector search.
         val queryVector = embeddingManager.generateEmbedding(query) ?: return emptyList()
         val allRecs = recordingDao.getAllRecordingsForSearch()
 
@@ -194,6 +212,29 @@ class RecordingsRepository @Inject constructor(
         }.sortedByDescending { it.second }
             .map { it.first }
     }
+
+    // [NEW] Backfill Logic
+    suspend fun getMissingEmbeddingsCount(): Int {
+        return recordingDao.getRecordingsMissingEmbeddings().size
+    }
+
+    suspend fun reindexAllMissing(onProgress: (Int, Int) -> Unit) = withContext(Dispatchers.IO) {
+        val missing = recordingDao.getRecordingsMissingEmbeddings()
+        val total = missing.size
+
+        missing.forEachIndexed { index, rec ->
+            // Double check transcript exists
+            val text = rec.transcript
+            if (!text.isNullOrBlank()) {
+                val vector = embeddingManager.generateEmbedding(text)
+                if (vector != null) {
+                    recordingDao.update(rec.copy(embedding = vector))
+                }
+            }
+            onProgress(index + 1, total)
+        }
+    }
+
     suspend fun updateTranscript(recording: Recording, newText: String) = withContext(Dispatchers.IO) {
         val updated = recording.copy(transcript = newText)
         recordingDao.update(updated)

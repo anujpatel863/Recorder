@@ -90,7 +90,10 @@ class RecordingsViewModel @Inject constructor(
     )
     private val _transcriptionProgress = MutableStateFlow(TranscriptionProgress())
 
-
+    // [NEW] Re-indexing State
+    var showReindexDialog by mutableStateOf(false)
+    var reindexProgress by mutableStateOf(0f)
+    var isReindexing by mutableStateOf(false)
 
     val allRecordings = combine(
         repository.getAllRecordings(),
@@ -140,9 +143,41 @@ class RecordingsViewModel @Inject constructor(
                 delay(500)
             }
         }
+
+        // [NEW] Check if re-indexing is needed on startup
+        checkConsistency()
     }
 
-    // --- TAG MANAGEMENT (PHASE 3.2 NEW) ---
+    // [NEW] Re-indexing Logic
+    fun checkConsistency() {
+        viewModelScope.launch {
+            if (SettingsManager.semanticSearchEnabled) {
+                val count = repository.getMissingEmbeddingsCount()
+                if (count > 0) {
+                    showReindexDialog = true
+                }
+            }
+        }
+    }
+
+    fun startReindexing() {
+        showReindexDialog = false
+        isReindexing = true
+        viewModelScope.launch {
+            repository.reindexAllMissing { current, total ->
+                reindexProgress = if (total > 0) current.toFloat() / total.toFloat() else 0f
+            }
+            isReindexing = false
+            reindexProgress = 0f
+            // Refresh logic if needed
+        }
+    }
+
+    fun dismissReindexDialog() {
+        showReindexDialog = false
+    }
+
+
 
     fun setTagFilter(tag: String?) {
         _tagFilter.value = tag
@@ -172,6 +207,9 @@ class RecordingsViewModel @Inject constructor(
             return
         }
         viewModelScope.launch {
+            // [NEW] Check consistency if they try to search and setting is ON
+            if (SettingsManager.semanticSearchEnabled) checkConsistency()
+
             // This runs the expensive DB/Embedding search
             val results = repository.performSemanticSearch(query)
             _rawSemanticResults.value = results
@@ -396,7 +434,6 @@ class RecordingsViewModel @Inject constructor(
                     vibrator.vibrate(VibrationEffect.createOneShot(50L, VibrationEffect.DEFAULT_AMPLITUDE))
                 }
             } catch (e: Exception) {
-                // Prevent crash if permission is still missing or hardware fails
                 e.printStackTrace()
             }
         }
@@ -408,7 +445,7 @@ class RecordingsViewModel @Inject constructor(
         if (isBound) try { getApplication<Application>().unbindService(connection) } catch(e:Exception){}
     }
 
-    // Data Classes
+
     data class PlayerState(val playingRecordingId: Long? = null, val isPlaying: Boolean = false, val currentPosition: Int = 0, val maxDuration: Int = 0)
     data class RecordingUiState(
         val recording: Recording,

@@ -18,6 +18,7 @@ object SettingsManager {
     // [NEW] Feature Toggles
     private const val SHOW_VISUALIZER_KEY = "show_visualizer"
     private const val AUTO_RECORD_KEY = "auto_record"
+    private const val AUTO_RECORD_BOOT_KEY = "auto_record_boot"
     private const val KEEP_SCREEN_ON_KEY = "keep_screen_on"
     private const val SPEAKER_DIARIZATION_KEY = "speaker_diarization"
 
@@ -70,6 +71,10 @@ object SettingsManager {
     var autoRecordOnLaunch: Boolean
         get() = prefs.getBoolean(AUTO_RECORD_KEY, false)
         set(value) = prefs.edit().putBoolean(AUTO_RECORD_KEY, value).apply()
+
+    var autoRecordOnBoot: Boolean
+        get() = prefs.getBoolean(AUTO_RECORD_BOOT_KEY, false)
+        set(value) = prefs.edit().putBoolean(AUTO_RECORD_BOOT_KEY, value).apply()
 
     var keepScreenOn: Boolean
         get() = prefs.getBoolean(KEEP_SCREEN_ON_KEY, false)
