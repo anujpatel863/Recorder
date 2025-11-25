@@ -1,111 +1,155 @@
 package com.example.allrecorder.recordings
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.abs
 
+/**
+ * LIVE Recording Visualizer
+ * Used by MainActivity.
+ * Visualizes raw byte data from the microphone.
+ */
 @Composable
 fun AudioVisualizer(
     audioData: ByteArray,
     modifier: Modifier = Modifier
 ) {
-    val primaryColor = MaterialTheme.colorScheme.onPrimary
-    val secondaryColor = MaterialTheme.colorScheme.tertiaryContainer
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val secondaryColor = MaterialTheme.colorScheme.tertiary
 
-    // Create a gradient brush for the "thread"
+    // Gradient Brush
     val brush = remember(primaryColor, secondaryColor) {
-        Brush.horizontalGradient(listOf(primaryColor, secondaryColor))
+        Brush.verticalGradient(listOf(secondaryColor, primaryColor, secondaryColor))
     }
 
     Canvas(
         modifier = modifier
             .fillMaxWidth()
-            .fillMaxHeight() // Fill the container height provided by the parent
+            .fillMaxHeight()
     ) {
+        if (audioData.isEmpty()) return@Canvas
+
         val width = size.width
         val height = size.height
         val centerY = height / 2f
 
+        // Convert raw bytes to shorts
         val shortBuffer = ByteBuffer.wrap(audioData).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
         val totalSamples = shortBuffer.remaining()
-        val samples = ShortArray(totalSamples)
-        shortBuffer.get(samples)
 
-        // We want a smooth wave, so we pick a small number of control points
-        // Too many points make it jagged, too few make it flat.
-        val pointsCount = 20
-        val step = if (totalSamples > 0) totalSamples / pointsCount else 1
+        // Fixed bar count for live view
+        val barCount = 40
+        val step = if (totalSamples > 0) totalSamples / barCount else 1
 
-        val path = Path()
-        path.moveTo(0f, centerY)
+        val barWidth = width / barCount
+        val gap = barWidth * 0.3f
+        val actualBarWidth = (barWidth - gap).coerceAtLeast(2f)
 
-        // We will gather coordinates first to calculate control points for smooth curves
-        val coordinates = mutableListOf<Pair<Float, Float>>()
-        coordinates.add(0f to centerY) // Start point
-
-        for (i in 1 until pointsCount) {
+        for (i in 0 until barCount) {
             val sampleIndex = i * step
             if (sampleIndex < totalSamples) {
-                // Get average amplitude in this chunk to prevent extreme spikes from single samples
+                // Find max amplitude in this small window
                 var maxAmp = 0f
                 val rangeEnd = (sampleIndex + step).coerceAtMost(totalSamples)
-                for (j in sampleIndex until rangeEnd) {
-                    val amp = abs(samples[j].toInt()).toFloat()
+                // Skip samples for performance if window is large
+                val skip = (rangeEnd - sampleIndex) / 20 + 1
+
+                for (j in sampleIndex until rangeEnd step skip) {
+                    val sample = shortBuffer.get(j).toInt()
+                    val amp = abs(sample).toFloat()
                     if (amp > maxAmp) maxAmp = amp
                 }
 
-                // Normalize amplitude (0.0 to 1.0)
-                val normalizedAmp = (maxAmp / 32767f).coerceIn(0f, 1f)
+                // Normalize (16-bit max is 32768)
+                // Multiply by 2.5f to make it look responsive even for quiet speech
+                val normalizedAmp = (maxAmp / 32768f * 2.5f).coerceIn(0.02f, 1f)
 
-                // Alternate up and down to create the "wave" effect
-                // If i is even, go up; if odd, go down.
-                val direction = if (i % 2 == 0) 1f else -1f
-                val waveHeight = normalizedAmp * (height * 0.8f) / 2f // 80% of height max
+                val barHeight = normalizedAmp * (height * 0.8f)
+                val xOffset = i * barWidth + (gap / 2)
 
-                val x = i * (width / pointsCount)
-                val y = centerY + (direction * waveHeight)
-                coordinates.add(x to y)
+                // Draw Mirrored Bar (Center outwards)
+                drawRoundRect(
+                    brush = brush,
+                    topLeft = Offset(xOffset, centerY - (barHeight / 2)),
+                    size = Size(actualBarWidth, barHeight),
+                    cornerRadius = CornerRadius(4f, 4f)
+                )
             }
         }
-        coordinates.add(width to centerY) // End point
+    }
+}
 
-        // Draw Cubic Bezier Curve through points
-        if (coordinates.size > 1) {
-            for (i in 0 until coordinates.size - 1) {
-                val (p0x, p0y) = coordinates[i]
-                val (p1x, p1y) = coordinates[i + 1]
+/**
+ * PLAYBACK Waveform / Scrubber
+ * Used by RecordingsScreen.
+ * Visualizes extracted amplitude list (from M4A or WAV).
+ */
+@Composable
+fun PlaybackWaveform(
+    amplitudes: List<Int>,
+    progress: Float, // 0.0 to 1.0
+    onSeek: (Float) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val playedColor = MaterialTheme.colorScheme.primary
+    // [MODIFIED] Changed to explicit Gray as requested
+    val unplayedColor = Color.Gray.copy(alpha = 0.6f)
 
-                // Control points for smooth curvature
-                val controlX1 = p0x + (p1x - p0x) / 2
-                val controlY1 = p0y
-                val controlX2 = p0x + (p1x - p0x) / 2
-                val controlY2 = p1y
-
-                path.cubicTo(controlX1, controlY1, controlX2, controlY2, p1x, p1y)
+    Canvas(
+        modifier = modifier
+            .fillMaxWidth()
+            .pointerInput(Unit) {
+                detectTapGestures { offset ->
+                    onSeek((offset.x / size.width).coerceIn(0f, 1f))
+                }
             }
-        }
+            .pointerInput(Unit) {
+                detectHorizontalDragGestures { change, _ ->
+                    change.consume()
+                    onSeek((change.position.x / size.width).coerceIn(0f, 1f))
+                }
+            }
+    ) {
+        if (amplitudes.isEmpty()) return@Canvas
 
-        drawPath(
-            path = path,
-            brush = brush,
-            style = Stroke(
-                width = 3.dp.toPx(),
-                cap = StrokeCap.Round,
-                join = StrokeJoin.Round
+        val barCount = amplitudes.size
+        val width = size.width
+        val height = size.height
+        val centerY = height / 2f
+
+        val barWidth = width / barCount
+        val gap = barWidth * 0.3f
+        val actualBarWidth = (barWidth - gap).coerceAtLeast(1f)
+
+        amplitudes.forEachIndexed { index, amp ->
+            // Normalize: Inputs are 0-100
+            val normalizedAmp = (amp / 100f).coerceIn(0.05f, 1f)
+            val barHeight = normalizedAmp * (height * 0.9f)
+            val xOffset = index * barWidth
+
+            val isPlayed = (index.toFloat() / barCount) <= progress
+
+            drawRoundRect(
+                color = if (isPlayed) playedColor else unplayedColor,
+                topLeft = Offset(xOffset, centerY - (barHeight / 2)),
+                size = Size(actualBarWidth, barHeight),
+                cornerRadius = CornerRadius(4f, 4f)
             )
-        )
+        }
     }
 }

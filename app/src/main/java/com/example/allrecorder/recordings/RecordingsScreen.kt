@@ -3,22 +3,17 @@ package com.example.allrecorder.recordings
 import android.os.Build
 import androidx.annotation.RequiresApi
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Label
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -27,14 +22,9 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -45,6 +35,7 @@ import com.example.allrecorder.Recording
 import com.example.allrecorder.formatDuration
 import java.io.File
 import com.example.allrecorder.TranscriptExporter
+import com.example.allrecorder.SettingsManager
 
 @RequiresApi(Build.VERSION_CODES.Q)
 @Composable
@@ -54,12 +45,10 @@ fun RecordingsScreen(
     val recordings by viewModel.allRecordings.collectAsState()
     val playerState by viewModel.playerState.collectAsState()
     val isRecording by remember { derivedStateOf { viewModel.isServiceRecording } }
-    // [NEW] Collect live duration
-    val recordingDuration by viewModel.formattedDuration.collectAsState()
-
     val context = LocalContext.current
     val searchResults by viewModel.searchResults.collectAsState()
     val currentTagFilter by viewModel.tagFilter.collectAsState()
+    val recordingDuration by viewModel.formattedDuration.collectAsState()
 
     // [NEW] Re-indexing UI State
     val showReindexDialog = viewModel.showReindexDialog
@@ -194,7 +183,6 @@ fun RecordingsScreen(
         ) {
             Icon(if (isRecording) painterResource(R.drawable.ic_pause) else painterResource(R.drawable.ic_play_arrow), null)
             Spacer(Modifier.width(8.dp))
-            // [MODIFIED] Show live duration if recording
             Text(if (isRecording) recordingDuration else "Start Recording")
         }
     }
@@ -555,21 +543,29 @@ private fun PlayerControls(
     onTranscribe: () -> Unit,
     onToggleSpeed: () -> Unit
 ) {
+    val simplePlayback = SettingsManager.simplePlaybackEnabled
+
     Column(modifier = Modifier.padding(top = 12.dp)) {
-        // Waveform: Show Canvas if amplitudes exist (WAV), else Slider (M4A)
-        if (amplitudes.isNotEmpty()) {
-            PlaybackWaveform(
-                amplitudes = amplitudes,
-                progress = if (totalDuration > 0) currentPosition.toFloat() / totalDuration else 0f,
-                onSeek = { percent -> onSeek(percent * totalDuration) },
-                modifier = Modifier.fillMaxWidth().height(60.dp).padding(vertical = 8.dp)
-            )
-        } else {
+        // [NEW] Toggle between Waveform and Slider based on preference
+        if (simplePlayback) {
             Slider(
                 value = currentPosition.toFloat(),
                 onValueChange = onSeek,
-                valueRange = 0f..totalDuration.toFloat()
+                valueRange = 0f..totalDuration.toFloat().coerceAtLeast(1f)
             )
+        } else {
+            if (amplitudes.isNotEmpty()) {
+                PlaybackWaveform(
+                    amplitudes = amplitudes,
+                    progress = if (totalDuration > 0) currentPosition.toFloat() / totalDuration else 0f,
+                    onSeek = { percent -> onSeek(percent * totalDuration) },
+                    modifier = Modifier.fillMaxWidth().height(60.dp).padding(vertical = 8.dp)
+                )
+            } else {
+                Box(Modifier.fillMaxWidth().height(60.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                }
+            }
         }
 
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -605,35 +601,6 @@ private fun PlayerControls(
                 Spacer(Modifier.width(8.dp))
                 Text("Transcribe Recording")
             }
-        }
-    }
-}
-
-@Composable
-fun PlaybackWaveform(
-    amplitudes: List<Int>,
-    progress: Float,
-    onSeek: (Float) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val playedColor = MaterialTheme.colorScheme.primary
-    val unplayedColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f)
-
-    Canvas(
-        modifier = modifier
-            .pointerInput(Unit) { detectTapGestures { onSeek((it.x / size.width).coerceIn(0f, 1f)) } }
-            .pointerInput(Unit) { detectHorizontalDragGestures { change, _ -> change.consume(); onSeek((change.position.x / size.width).coerceIn(0f, 1f)) } }
-    ) {
-        val barWidth = size.width / amplitudes.size.toFloat()
-        val gap = barWidth * 0.3f
-        val actualBarWidth = barWidth - gap
-        amplitudes.forEachIndexed { index, amplitude ->
-            val barHeightPercent = (amplitude / 100f).coerceAtLeast(0.1f)
-            val barHeight = barHeightPercent * size.height
-            val top = (size.height - barHeight) / 2f
-            val barCenterPercent = (index * barWidth + actualBarWidth / 2) / size.width
-            val color = if (barCenterPercent <= progress) playedColor else unplayedColor
-            drawRoundRect(color = color, topLeft = Offset(index * barWidth, top), size = Size(actualBarWidth, barHeight), cornerRadius = CornerRadius(4f, 4f))
         }
     }
 }

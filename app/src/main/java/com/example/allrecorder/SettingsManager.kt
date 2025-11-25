@@ -3,6 +3,7 @@ package com.example.allrecorder
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.preference.PreferenceManager
+import androidx.core.content.edit
 
 object SettingsManager {
 
@@ -24,6 +25,7 @@ object SettingsManager {
 
     private const val SEMANTIC_SEARCH_KEY = "semantic_search"
     private const val HAPTIC_FEEDBACK_KEY = "haptic_feedback"
+    private const val SIMPLE_PLAYBACK_KEY = "simple_playback"
 
     enum class RecordingFormat(val extension: String, val mimeType: String) {
         WAV(".wav", "audio/wav"),
@@ -47,7 +49,7 @@ object SettingsManager {
 
     var asrEnhancementEnabled: Boolean
         get() = prefs.getBoolean(ASR_ENHANCEMENT_KEY, true)
-        set(value) = prefs.edit().putBoolean(ASR_ENHANCEMENT_KEY, value).apply()
+        set(value) = prefs.edit { putBoolean(ASR_ENHANCEMENT_KEY, value) }
 
     var recordingFormat: RecordingFormat
         get() {
@@ -59,38 +61,41 @@ object SettingsManager {
             }
         }
         set(value) {
-            prefs.edit().putString(RECORDING_FORMAT_KEY, value.name).apply()
+            prefs.edit { putString(RECORDING_FORMAT_KEY, value.name) }
         }
 
     // --- [NEW] Feature Properties ---
 
     var showVisualizer: Boolean
         get() = prefs.getBoolean(SHOW_VISUALIZER_KEY, true)
-        set(value) = prefs.edit().putBoolean(SHOW_VISUALIZER_KEY, value).apply()
+        set(value) = prefs.edit { putBoolean(SHOW_VISUALIZER_KEY, value) }
 
     var autoRecordOnLaunch: Boolean
         get() = prefs.getBoolean(AUTO_RECORD_KEY, false)
-        set(value) = prefs.edit().putBoolean(AUTO_RECORD_KEY, value).apply()
+        set(value) = prefs.edit { putBoolean(AUTO_RECORD_KEY, value) }
 
     var autoRecordOnBoot: Boolean
         get() = prefs.getBoolean(AUTO_RECORD_BOOT_KEY, false)
-        set(value) = prefs.edit().putBoolean(AUTO_RECORD_BOOT_KEY, value).apply()
+        set(value) = prefs.edit { putBoolean(AUTO_RECORD_BOOT_KEY, value) }
 
     var keepScreenOn: Boolean
         get() = prefs.getBoolean(KEEP_SCREEN_ON_KEY, false)
-        set(value) = prefs.edit().putBoolean(KEEP_SCREEN_ON_KEY, value).apply()
+        set(value) = prefs.edit { putBoolean(KEEP_SCREEN_ON_KEY, value) }
 
     var speakerDiarizationEnabled: Boolean
         get() = prefs.getBoolean(SPEAKER_DIARIZATION_KEY, true)
-        set(value) = prefs.edit().putBoolean(SPEAKER_DIARIZATION_KEY, value).apply()
+        set(value) = prefs.edit { putBoolean(SPEAKER_DIARIZATION_KEY, value) }
 
 
 
     var semanticSearchEnabled: Boolean
         get() = prefs.getBoolean(SEMANTIC_SEARCH_KEY, true)
-        set(value) = prefs.edit().putBoolean(SEMANTIC_SEARCH_KEY, value).apply()
+        set(value) = prefs.edit { putBoolean(SEMANTIC_SEARCH_KEY, value) }
 
     var hapticFeedback: Boolean
         get() = prefs.getBoolean(HAPTIC_FEEDBACK_KEY, true)
-        set(value) = prefs.edit().putBoolean(HAPTIC_FEEDBACK_KEY, value).apply()
+        set(value) = prefs.edit { putBoolean(HAPTIC_FEEDBACK_KEY, value) }
+    var simplePlaybackEnabled: Boolean
+        get() = prefs.getBoolean("simple_playback", false)
+        set(value) = prefs.edit { putBoolean("simple_playback", value) }
 }

@@ -382,6 +382,14 @@ class MainActivity : ComponentActivity() {
                     selected = false,
                     onClick = { }
                 )
+                //Simple Playback Option
+                var simplePlaybackState by remember { mutableStateOf(SettingsManager.simplePlaybackEnabled) }
+                NavigationDrawerItem(
+                    label = { Text("Simple Playback Mode") },
+                    badge = { Switch(checked = simplePlaybackState, onCheckedChange = { simplePlaybackState = it; SettingsManager.simplePlaybackEnabled = it }) },
+                    selected = false,
+                    onClick = { }
+                )
 
                 // Auto-Record
                 var autoRecordState by remember { mutableStateOf(SettingsManager.autoRecordOnLaunch) }
