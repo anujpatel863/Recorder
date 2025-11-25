@@ -49,6 +49,10 @@ class RecordingsViewModel @Inject constructor(
     private val _audioData = MutableStateFlow(ByteArray(0))
     val audioData: StateFlow<ByteArray> = _audioData.asStateFlow()
 
+    // [NEW] Live Duration for Recording
+    private val _formattedDuration = MutableStateFlow("00:00")
+    val formattedDuration: StateFlow<String> = _formattedDuration.asStateFlow()
+
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             val binder = service as RecordingService.LocalBinder
@@ -134,12 +138,26 @@ class RecordingsViewModel @Inject constructor(
 
 
     init {
-        // Monitor Service State
+        // Monitor Service State & Live Duration
         viewModelScope.launch {
             while(true) {
-                if (isServiceRecording != RecordingService.isRecording) {
-                    isServiceRecording = RecordingService.isRecording
+                // Check recording state
+                val recording = RecordingService.isRecording
+                if (isServiceRecording != recording) {
+                    isServiceRecording = recording
                 }
+
+                // Update duration text
+                if (recording && recordingService != null) {
+                    val durationMillis = System.currentTimeMillis() - recordingService!!.recordingStartTime
+                    // formatDuration is available in Utils.kt (package com.example.allrecorder)
+                    _formattedDuration.value = formatDuration(durationMillis)
+                } else if (recording) {
+                    _formattedDuration.value = "Starting..."
+                } else {
+                    _formattedDuration.value = "Start Recording"
+                }
+
                 delay(500)
             }
         }

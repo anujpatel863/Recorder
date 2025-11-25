@@ -60,7 +60,10 @@ class RecordingService : Service() {
 
     // --- State ---
     private var isRecordingInternal = false
-    private var recordingStartTime: Long = 0
+
+    // [MODIFIED] Made public so ViewModel can read it for live timer
+    var recordingStartTime: Long = 0
+
     private lateinit var filePath: String
     private var currentFormat: SettingsManager.RecordingFormat = SettingsManager.RecordingFormat.M4A
 

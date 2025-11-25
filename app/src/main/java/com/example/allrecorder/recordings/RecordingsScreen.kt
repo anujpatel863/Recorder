@@ -54,6 +54,9 @@ fun RecordingsScreen(
     val recordings by viewModel.allRecordings.collectAsState()
     val playerState by viewModel.playerState.collectAsState()
     val isRecording by remember { derivedStateOf { viewModel.isServiceRecording } }
+    // [NEW] Collect live duration
+    val recordingDuration by viewModel.formattedDuration.collectAsState()
+
     val context = LocalContext.current
     val searchResults by viewModel.searchResults.collectAsState()
     val currentTagFilter by viewModel.tagFilter.collectAsState()
@@ -191,7 +194,8 @@ fun RecordingsScreen(
         ) {
             Icon(if (isRecording) painterResource(R.drawable.ic_pause) else painterResource(R.drawable.ic_play_arrow), null)
             Spacer(Modifier.width(8.dp))
-            Text(if (isRecording) "Stop Recording" else "Start Recording")
+            // [MODIFIED] Show live duration if recording
+            Text(if (isRecording) recordingDuration else "Start Recording")
         }
     }
 }
