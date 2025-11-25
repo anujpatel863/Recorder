@@ -90,6 +90,19 @@ class MainActivity : ComponentActivity() {
         if (!hasPermissions()) {
             requestPermissions()
         }
+        if (SettingsManager.keepScreenOn) {
+            window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+
+        // [NEW] Logic for Auto-Record on Launch
+        // We check if permission exists and if we aren't already recording
+        if (SettingsManager.autoRecordOnLaunch && hasPermissions() && !RecordingService.isRecording) {
+            startService(Intent(this, RecordingService::class.java).apply {
+                action = RecordingService.ACTION_START
+            })
+        }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -110,6 +123,7 @@ class MainActivity : ComponentActivity() {
             startActivity(intent)
         }
     }
+
 
     @RequiresApi(Build.VERSION_CODES.Q)
     @Composable
@@ -282,7 +296,7 @@ class MainActivity : ComponentActivity() {
                                         .padding(vertical = 8.dp, horizontal = 8.dp),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    if (isRecording) {
+                                    if (isRecording && SettingsManager.showVisualizer) {
                                         AudioVisualizer(audioData = audioData)
                                     }
                                 }
@@ -323,23 +337,16 @@ class MainActivity : ComponentActivity() {
         var showAsrModelDialog by remember { mutableStateOf(false) }
         var showManageDialog by remember { mutableStateOf(false) }
         var showFormatDialog by remember { mutableStateOf(false) }
-
-        var asrEnhancementEnabled by remember {
-            mutableStateOf(SettingsManager.asrEnhancementEnabled)
-        }
-
         val context = LocalContext.current
 
-        // [FIX] Inject ModelManagementViewModel properly
+        // Inject ViewModel for checking downloads
         val modelViewModel: ModelManagementViewModel = hiltViewModel()
 
         ModalDrawerSheet(windowInsets = WindowInsets.systemBars) {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 Spacer(Modifier.height(12.dp))
 
-                // --- Navigation Section ---
                 Text("Navigation", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-
                 NavigationDrawerItem(
                     icon = { Icon(Icons.Default.Folder, null) },
                     label = { Text("All Recordings") },
@@ -347,7 +354,7 @@ class MainActivity : ComponentActivity() {
                     onClick = { onScreenSelected(Screen.Home) }
                 )
                 NavigationDrawerItem(
-                    icon = { Icon(Icons.AutoMirrored.Filled.Label, null) }, // Use Label Icon
+                    icon = { Icon(Icons.AutoMirrored.Filled.Label, null) },
                     label = { Text("Tags") },
                     selected = currentScreen == Screen.Tags,
                     onClick = { onScreenSelected(Screen.Tags) }
@@ -361,148 +368,197 @@ class MainActivity : ComponentActivity() {
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
-                // --- Existing Settings ---
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                    modifier = Modifier
-                        .padding(16.dp)
-                        .fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier.padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(Icons.Default.Storage, contentDescription = null)
-                        Spacer(Modifier.width(16.dp))
-                        Column {
-                            Text("AI Models Storage", style = MaterialTheme.typography.titleSmall)
-                            Text("Manage downloaded models", style = MaterialTheme.typography.bodySmall)
-                        }
-                        Spacer(Modifier.weight(1f))
-                        TextButton(onClick = { showManageDialog = true }) {
-                            Text("Manage")
-                        }
-                    }
-                }
-                HorizontalDivider()
+                // --- App Preferences ---
+                Text("Preferences", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
 
-                Text("Recording", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
-
+                // Visualizer
+                var visualizerState by remember { mutableStateOf(SettingsManager.showVisualizer) }
                 NavigationDrawerItem(
-                    label = { Text("Audio Format") },
-                    badge = {
-                        // Show current setting as a badge (e.g., "M4A")
-                        Text(SettingsManager.recordingFormat.name, style = MaterialTheme.typography.labelSmall)
-                    },
+                    label = { Text("Show Audio Visualizer") },
+                    badge = { Switch(checked = visualizerState, onCheckedChange = { visualizerState = it; SettingsManager.showVisualizer = it }) },
                     selected = false,
-                    onClick = { showFormatDialog = true }
+                    onClick = { }
                 )
 
+                // Auto-Record
+                var autoRecordState by remember { mutableStateOf(SettingsManager.autoRecordOnLaunch) }
                 NavigationDrawerItem(
-                    label = { Text("Recording Chunk Duration") },
+                    label = { Text("Auto-Record on Launch") },
+                    badge = { Switch(checked = autoRecordState, onCheckedChange = { autoRecordState = it; SettingsManager.autoRecordOnLaunch = it }) },
                     selected = false,
-                    onClick = { showChunkDialog = true }
+                    onClick = { }
+                )
+
+                // Keep Screen On
+                var screenOnState by remember { mutableStateOf(SettingsManager.keepScreenOn) }
+                NavigationDrawerItem(
+                    label = { Text("Keep Screen On") },
+                    badge = { Switch(checked = screenOnState, onCheckedChange = { screenOnState = it; SettingsManager.keepScreenOn = it; Toast.makeText(context, "Restart app to apply", Toast.LENGTH_SHORT).show() }) },
+                    selected = false,
+                    onClick = { }
+                )
+
+                // Haptic Feedback
+                var hapticState by remember { mutableStateOf(SettingsManager.hapticFeedback) }
+                NavigationDrawerItem(
+                    label = { Text("Haptic Feedback") },
+                    badge = { Switch(checked = hapticState, onCheckedChange = { hapticState = it; SettingsManager.hapticFeedback = it }) },
+                    selected = false,
+                    onClick = { }
                 )
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
-                Text("Transcription (ASR)", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
+                // --- Advanced AI Processing ---
+                Text("AI Processing", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
+
+                // 1. Noise Enhancement (Restored & "Smart")
+                val noiseBundle = ModelRegistry.getBundle("bundle_enhancement")!!
+                val noiseState by modelViewModel.getBundleState(noiseBundle).collectAsState()
+                var asrEnhancementEnabled by remember { mutableStateOf(SettingsManager.asrEnhancementEnabled) }
 
                 NavigationDrawerItem(
-                    label = { Text("Transcription Language") },
+                    label = { Column { Text("Noise Reduction"); Text("Remove background noise", style = MaterialTheme.typography.labelSmall, color = Color.Gray) } },
+                    selected = false,
+                    badge = {
+                        ModelDependentSwitch(
+                            isChecked = asrEnhancementEnabled,
+                            state = noiseState,
+                            onCheckedChange = { isChecked ->
+                                if (isChecked && !noiseState.isReady) {
+                                    Toast.makeText(context, "Downloading Noise Reduction model...", Toast.LENGTH_SHORT).show()
+                                    modelViewModel.downloadBundle(noiseBundle)
+                                } else {
+                                    asrEnhancementEnabled = isChecked
+                                    SettingsManager.asrEnhancementEnabled = isChecked
+                                }
+                            }
+                        )
+                    },
+                    onClick = { }
+                )
+
+                // 2. Speaker Diarization (Smart Toggle)
+                val diarizationBundle = ModelRegistry.getBundle("bundle_diarization")!!
+                val diarizationState by modelViewModel.getBundleState(diarizationBundle).collectAsState()
+                var diarizationEnabled by remember { mutableStateOf(SettingsManager.speakerDiarizationEnabled) }
+
+                NavigationDrawerItem(
+                    label = { Column { Text("Speaker ID"); Text("Distinguish speakers", style = MaterialTheme.typography.labelSmall, color = Color.Gray) } },
+                    selected = false,
+                    badge = {
+                        ModelDependentSwitch(
+                            isChecked = diarizationEnabled,
+                            state = diarizationState,
+                            onCheckedChange = { isChecked ->
+                                if (isChecked && !diarizationState.isReady) {
+                                    Toast.makeText(context, "Downloading Diarization models...", Toast.LENGTH_SHORT).show()
+                                    modelViewModel.downloadBundle(diarizationBundle)
+                                } else {
+                                    diarizationEnabled = isChecked
+                                    SettingsManager.speakerDiarizationEnabled = isChecked
+                                }
+                            }
+                        )
+                    },
+                    onClick = { }
+                )
+
+                // 3. Semantic Search (Smart Toggle)
+                val searchBundle = ModelRegistry.getBundle("bundle_search")!!
+                val searchState by modelViewModel.getBundleState(searchBundle).collectAsState()
+                var searchEnabled by remember { mutableStateOf(SettingsManager.semanticSearchEnabled) }
+
+                NavigationDrawerItem(
+                    label = { Column { Text("Semantic Search"); Text("Enable AI search index", style = MaterialTheme.typography.labelSmall, color = Color.Gray) } },
+                    selected = false,
+                    badge = {
+                        ModelDependentSwitch(
+                            isChecked = searchEnabled,
+                            state = searchState,
+                            onCheckedChange = { isChecked ->
+                                if (isChecked && !searchState.isReady) {
+                                    Toast.makeText(context, "Downloading Search model...", Toast.LENGTH_SHORT).show()
+                                    modelViewModel.downloadBundle(searchBundle)
+                                } else {
+                                    searchEnabled = isChecked
+                                    SettingsManager.semanticSearchEnabled = isChecked
+                                }
+                            }
+                        )
+                    },
+                    onClick = { }
+                )
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+                // --- Management Items ---
+                Text("Models & Storage", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
+
+                NavigationDrawerItem(
+                    label = { Text("Manage AI Models") },
+                    selected = false,
+                    onClick = { showManageDialog = true }
+                )
+                NavigationDrawerItem(
+                    label = { Text("Recording Format") },
+                    badge = { Text(SettingsManager.recordingFormat.name, style = MaterialTheme.typography.labelSmall) },
+                    selected = false,
+                    onClick = { showFormatDialog = true }
+                )
+                NavigationDrawerItem(
+                    label = { Text("Chunk Duration") },
+                    selected = false,
+                    onClick = { showChunkDialog = true }
+                )
+                NavigationDrawerItem(
+                    label = { Text("ASR Language") },
                     selected = false,
                     onClick = { showLanguageDialog = true }
                 )
-
                 NavigationDrawerItem(
                     label = { Text("ASR Model") },
                     selected = false,
                     onClick = { showAsrModelDialog = true }
                 )
-
-                val noiseBundle = ModelRegistry.getBundle("bundle_enhancement")!!
-                // [FIX] This line should now compile correctly because BundleUiState is known
-                val noiseState by modelViewModel.getBundleState(noiseBundle).collectAsState()
-
-                NavigationDrawerItem(
-                    label = { Text("Noise Reduction") },
-                    selected = false,
-                    badge = {
-                        // [FIX] These properties (isDownloading, isReady) are now valid
-                        if (noiseState.isDownloading) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(24.dp),
-                                strokeWidth = 2.dp
-                            )
-                        } else {
-                            Switch(
-                                checked = asrEnhancementEnabled && noiseState.isReady,
-                                onCheckedChange = { isChecked ->
-                                    if (isChecked) {
-                                        if (noiseState.isReady) {
-                                            asrEnhancementEnabled = true
-                                            SettingsManager.prefs.edit { putBoolean("asr_enhancement", true) }
-                                        } else {
-                                            Toast.makeText(context, "Downloading Noise Reduction model...", Toast.LENGTH_SHORT).show()
-                                            modelViewModel.downloadBundle(noiseBundle)
-                                        }
-                                    } else {
-                                        asrEnhancementEnabled = false
-                                        SettingsManager.prefs.edit { putBoolean("asr_enhancement", false) }
-                                    }
-                                }
-                            )
-                        }
-                    },
-                    onClick = { }
-                )
             }
         }
-        if (showFormatDialog) {
-            RecordingFormatDialog(
-                onDismiss = { showFormatDialog = false },
-                onFormatSelected = { newFormat ->
-                    SettingsManager.recordingFormat = newFormat
-                    // Note: No need to manually trigger UI refresh for this,
-                    // as RecordingService reads this value directly when "Start" is clicked.
-                }
-            )
-        }
-        // ... (Dialogs remain unchanged) ...
-        if (showChunkDialog) {
-            ListPreferenceDialog(
-                key = "chunk_duration",
-                title = "Recording Chunk Duration",
-                entriesResId = R.array.chunk_duration_entries,
-                entryValuesResId = R.array.chunk_duration_values,
-                onDismiss = { showChunkDialog = false }
-            )
-        }
-        if (showLanguageDialog) {
-            ListPreferenceDialog(
-                key = "asr_language",
-                title = "Transcription Language",
-                entriesResId = R.array.asr_language_entries,
-                entryValuesResId = R.array.asr_language_values,
-                onDismiss = { showLanguageDialog = false }
-            )
-        }
 
-        if (showAsrModelDialog) {
-            AsrModelSelectionDialog(
-                onDismiss = { showAsrModelDialog = false },
-                viewModel = modelViewModel
-            )
-        }
+        // --- Dialogs ---
+        if (showFormatDialog) RecordingFormatDialog({ showFormatDialog = false }) { SettingsManager.recordingFormat = it }
+        if (showChunkDialog) ListPreferenceDialog("chunk_duration", "Recording Chunk Duration", R.array.chunk_duration_entries, R.array.chunk_duration_values) { showChunkDialog = false }
+        if (showLanguageDialog) ListPreferenceDialog("asr_language", "Transcription Language", R.array.asr_language_entries, R.array.asr_language_values) { showLanguageDialog = false }
+        if (showAsrModelDialog) AsrModelSelectionDialog({ showAsrModelDialog = false }, modelViewModel)
+        if (showManageDialog) ModelManagementDialog({ showManageDialog = false }, modelViewModel)
+    }
 
-        if (showManageDialog) {
-            ModelManagementDialog(
-                onDismiss = { showManageDialog = false },
-                viewModel = modelViewModel
+    @Composable
+    private fun ModelDependentSwitch(
+        isChecked: Boolean,
+        state: com.example.allrecorder.ui.components.BundleUiState, // Ensure this matches your ViewModel's state class
+        onCheckedChange: (Boolean) -> Unit
+    ) {
+        if (state.isDownloading) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(24.dp),
+                strokeWidth = 2.dp
+            )
+        } else {
+            // Force switch to OFF if model is not ready, unless we are currently checking it to download
+            val uiChecked = isChecked && state.isReady
+
+            Switch(
+                checked = uiChecked,
+                onCheckedChange = onCheckedChange,
+                thumbContent = if (!state.isReady) {
+                    { Icon(Icons.Default.CloudDownload, null, modifier = Modifier.size(16.dp)) }
+                } else null,
+                colors = SwitchDefaults.colors(
+                    uncheckedThumbColor = if(!state.isReady) MaterialTheme.colorScheme.primary else Color.Unspecified
+                )
             )
         }
     }
-
     @Composable
     fun AsrModelSelectionDialog(
         onDismiss: () -> Unit,

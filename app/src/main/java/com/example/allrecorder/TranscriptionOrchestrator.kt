@@ -106,6 +106,9 @@ class TranscriptionOrchestrator(
         modelName: String,
         onProgress: (Float) -> Unit
     ): List<FinalTranscriptSegment> {
+        // [MODIFIED] Check the setting!
+        val runDiarization = SettingsManager.speakerDiarizationEnabled
+
         if (modelName != currentAsrModel || language != currentAsrLanguage || offlineRecognizer == null) {
             offlineRecognizer?.release()
             try {
@@ -148,9 +151,12 @@ class TranscriptionOrchestrator(
             return emptyList()
         }
         val finalSegments = mutableListOf<FinalTranscriptSegment>()
-        val currentDiarizer = speakerDiarization
+
+        // [MODIFIED] Only use diarizer if setting is ENABLED and model is loaded
+        val currentDiarizer = if (runDiarization) speakerDiarization else null
 
         if (currentDiarizer != null) {
+            // ... (Keep existing diarization logic block) ...
             try {
                 val segments = currentDiarizer.process(samples = audioSamples)
                 val total = segments.size.toFloat()
@@ -169,12 +175,13 @@ class TranscriptionOrchestrator(
                     }
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Diarization crashed. Falling back to simple transcription.", e)
+                Log.e(TAG, "Diarization crashed. Falling back.", e)
                 val text = decodeSegment(recognizer, audioSamples)
                 finalSegments.add(FinalTranscriptSegment(0, 0f, 0f, text))
             }
         } else {
-            Log.i(TAG, "Running Minimum Resource Mode (ASR Only)")
+            // ... (Keep existing simple transcription logic) ...
+            Log.i(TAG, "Running Fast Mode (ASR Only)")
             onProgress(0.5f)
             try {
                 val text = decodeSegment(recognizer, audioSamples)

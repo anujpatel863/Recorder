@@ -1,5 +1,6 @@
 package com.example.allrecorder.recordings
 
+import android.Manifest
 import android.app.Application
 import android.content.ComponentName
 import android.content.Context
@@ -8,6 +9,7 @@ import android.content.ServiceConnection
 import android.media.MediaPlayer
 import android.os.Build
 import android.os.IBinder
+import android.os.VibrationEffect
 import android.widget.EditText
 import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AlertDialog
@@ -27,6 +29,9 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.io.File
 import javax.inject.Inject
+import android.os.Vibrator
+import androidx.annotation.RequiresPermission
+
 
 @HiltViewModel
 class RecordingsViewModel @Inject constructor(
@@ -34,7 +39,7 @@ class RecordingsViewModel @Inject constructor(
     private val repository: RecordingsRepository
 ) : AndroidViewModel(application) {
 
-    // --- SERVICE BINDING & AUDIO DATA ---
+
     var isServiceRecording by mutableStateOf(RecordingService.isRecording)
         private set
 
@@ -379,10 +384,22 @@ class RecordingsViewModel @Inject constructor(
     // Service Helpers
     fun bindService(context: Context) { Intent(context, RecordingService::class.java).also { intent -> context.bindService(intent, connection, Context.BIND_AUTO_CREATE) } }
     fun unbindService(context: Context) { if (isBound) { context.unbindService(connection); isBound = false; recordingService = null } }
+    @RequiresPermission(Manifest.permission.VIBRATE)
     fun toggleRecordingService(context: Context) {
         val intent = Intent(context, RecordingService::class.java)
         if (RecordingService.isRecording) { intent.action = RecordingService.ACTION_STOP; context.startService(intent) }
         else { context.startService(intent) }
+        if (SettingsManager.hapticFeedback) {
+            try {
+                val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as? android.os.Vibrator
+                if (vibrator?.hasVibrator() == true) { // Check if hardware exists
+                    vibrator.vibrate(VibrationEffect.createOneShot(50L, VibrationEffect.DEFAULT_AMPLITUDE))
+                }
+            } catch (e: Exception) {
+                // Prevent crash if permission is still missing or hardware fails
+                e.printStackTrace()
+            }
+        }
     }
 
     override fun onCleared() {
