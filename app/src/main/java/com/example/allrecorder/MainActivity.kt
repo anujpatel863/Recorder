@@ -81,8 +81,10 @@ class MainActivity : ComponentActivity() {
             ActivityResultContracts.RequestMultiplePermissions()
         ) { permissions ->
             val recordAudioGranted = permissions.getOrDefault(Manifest.permission.RECORD_AUDIO, false)
-            if (!recordAudioGranted) {
-                Toast.makeText(this, "Audio recording permission is required.", Toast.LENGTH_LONG).show()
+            val phoneStateGranted = permissions.getOrDefault(Manifest.permission.READ_PHONE_STATE, false)
+
+            if (!recordAudioGranted || !phoneStateGranted) {
+                Toast.makeText(this, "Permissions required for Call Recording.", Toast.LENGTH_LONG).show()
             }
         }
 
@@ -551,6 +553,12 @@ class MainActivity : ComponentActivity() {
 
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private fun requestPermissions() {
-        requestPermissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS))
+        // [UPDATED] Request Call permissions along with Audio
+        requestPermissionLauncher.launch(arrayOf(
+            Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.POST_NOTIFICATIONS,
+            Manifest.permission.READ_PHONE_STATE,
+            Manifest.permission.READ_CALL_LOG
+        ))
     }
 }

@@ -70,6 +70,8 @@ class RecordingService : Service() {
     private val chunkHandler = Handler(Looper.getMainLooper())
     private var chunkRunnable: Runnable? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var currentCallerInfo: String = ""
+    private var isPhoneCallMode = false
 
     private val binder = LocalBinder()
     private val _audioDataFlow = MutableStateFlow(ByteArray(0))
@@ -137,6 +139,9 @@ class RecordingService : Service() {
                 return START_STICKY
             }
             ACTION_START, null -> {
+                isPhoneCallMode = intent?.getBooleanExtra("IS_PHONE_CALL", false) ?: false
+                val number = intent?.getStringExtra("CALLER_NUMBER")
+                currentCallerInfo = if (isPhoneCallMode) getContactName(number) else ""
                 startForegroundSafely()
                 startRecording()
                 return START_STICKY
@@ -173,7 +178,11 @@ class RecordingService : Service() {
         // Read the LATEST format from settings
         currentFormat = SettingsManager.recordingFormat
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        val fileName = "Rec_$timeStamp${currentFormat.extension}"
+        val fileName = if (isPhoneCallMode && currentCallerInfo.isNotEmpty()) {
+            "${currentCallerInfo}_$timeStamp${currentFormat.extension}"
+        } else {
+            "Rec_$timeStamp${currentFormat.extension}"
+        }
         filePath = File(filesDir, fileName).absolutePath
 
         try {
@@ -206,7 +215,28 @@ class RecordingService : Service() {
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     private fun prepareAudioRecord() {
         val bufferSizeInBytes = bufferSize * 2
-        audioRecord = AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, sampleRate, channelConfig, audioFormat, bufferSizeInBytes)
+
+        // [NEW] Choose source based on mode
+        val audioSource = if (isPhoneCallMode) {
+            // VOICE_COMMUNICATION is tuned for VoIP/Calls (Echo Cancellation)
+            MediaRecorder.AudioSource.VOICE_COMMUNICATION
+        } else {
+            // VOICE_RECOGNITION is raw/clean for Speech-to-Text
+            MediaRecorder.AudioSource.VOICE_RECOGNITION
+        }
+
+        try {
+            audioRecord = AudioRecord(audioSource, sampleRate, channelConfig, audioFormat, bufferSizeInBytes)
+            if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
+                // Fallback if VOICE_COMMUNICATION is blocked by device manufacturer
+                Log.w(TAG, "Standard source failed, falling back to MIC")
+                audioRecord = AudioRecord(MediaRecorder.AudioSource.MIC, sampleRate, channelConfig, audioFormat, bufferSizeInBytes)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to init AudioRecord", e)
+            throw IOException("AudioRecord init failed")
+        }
+
         if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) throw IOException("AudioRecord init failed")
     }
 
@@ -343,7 +373,15 @@ class RecordingService : Service() {
     }
 
     private suspend fun saveRecordingToDatabase(path: String, startTime: Long, duration: Long) {
-        val newRecording = Recording(filePath = path, startTime = startTime, duration = duration, processingStatus = 0)
+        val tagsList = if (isPhoneCallMode) listOf("call") else emptyList()
+
+        val newRecording = Recording(
+            filePath = path,
+            startTime = startTime,
+            duration = duration,
+            processingStatus = 0,
+            tags = tagsList
+        )
         recordingDao.insert(newRecording)
     }
 
@@ -397,7 +435,35 @@ class RecordingService : Service() {
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .build()
     }
+    private fun getContactName(phoneNumber: String?): String {
+        if (phoneNumber.isNullOrEmpty()) return "Unknown_Call"
 
+        // Sanitize number for filename safety
+        val safeNumber = phoneNumber.replace(Regex("[^a-zA-Z0-9]"), "")
+
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+            return "Call_$safeNumber"
+        }
+
+        val uri = android.net.Uri.withAppendedPath(android.provider.ContactsContract.PhoneLookup.CONTENT_FILTER_URI, android.net.Uri.encode(phoneNumber))
+        val projection = arrayOf(android.provider.ContactsContract.PhoneLookup.DISPLAY_NAME)
+
+        try {
+            contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val nameIndex = cursor.getColumnIndex(android.provider.ContactsContract.PhoneLookup.DISPLAY_NAME)
+                    if (nameIndex >= 0) {
+                        val name = cursor.getString(nameIndex)
+                        // Sanitize name for filename (remove spaces, special chars)
+                        return name.replace(Regex("[^a-zA-Z0-9]"), "_")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Contact lookup failed", e)
+        }
+        return "Call_$safeNumber"
+    }
     @Throws(IOException::class)
     private fun updateWavHeader(file: File, dataSize: Int) {
         val channels = 1; val bitDepth = 16; val byteRate = sampleRate * channels * bitDepth / 8; val totalDataLen = dataSize + 36
