@@ -35,6 +35,7 @@ import java.io.RandomAccessFile
 import java.text.SimpleDateFormat
 import java.util.*
 import javax.inject.Inject
+import android.media.AudioDeviceInfo
 
 @AndroidEntryPoint
 class RecordingService : Service() {
@@ -198,6 +199,11 @@ class RecordingService : Service() {
             isRecordingInternal = true
             isRecording = true
             recordingStartTime = System.currentTimeMillis()
+            if (isPhoneCallMode) {
+                scope.launch(Dispatchers.Main) {
+                    setSpeakerphoneOn(true)
+                }
+            }
 
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.notify(NOTIFICATION_ID, createNotification(isRecording = true))
@@ -217,13 +223,9 @@ class RecordingService : Service() {
         val bufferSizeInBytes = bufferSize * 2
 
         // [NEW] Choose source based on mode
-        val audioSource = if (isPhoneCallMode) {
-            // VOICE_COMMUNICATION is tuned for VoIP/Calls (Echo Cancellation)
-            MediaRecorder.AudioSource.VOICE_COMMUNICATION
-        } else {
-            // VOICE_RECOGNITION is raw/clean for Speech-to-Text
-            MediaRecorder.AudioSource.VOICE_RECOGNITION
-        }
+
+        val audioSource = MediaRecorder.AudioSource.VOICE_RECOGNITION
+
 
         try {
             audioRecord = AudioRecord(audioSource, sampleRate, channelConfig, audioFormat, bufferSizeInBytes)
@@ -238,6 +240,38 @@ class RecordingService : Service() {
         }
 
         if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) throw IOException("AudioRecord init failed")
+    }
+    private fun setSpeakerphoneOn(enable: Boolean) {
+        if (!isPhoneCallMode) return
+
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+
+        try {
+            // MODE_IN_CALL required for the routing to apply to the voice call
+            audioManager.mode = android.media.AudioManager.MODE_IN_CALL
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                // Android 12+ (API 31+): Use setCommunicationDevice
+                val devices = audioManager.availableCommunicationDevices
+                if (enable) {
+                    val speaker = devices.find { it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                    if (speaker != null) {
+                        val result = audioManager.setCommunicationDevice(speaker)
+                        Log.i(TAG, "Speakerphone set (Modern API): $result")
+                    }
+                } else {
+                    audioManager.clearCommunicationDevice()
+                }
+            } else {
+                // Android 11 and below: Use deprecated methods
+                @Suppress("DEPRECATION")
+                if (audioManager.isSpeakerphoneOn != enable) {
+                    audioManager.isSpeakerphoneOn = enable
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to toggle speakerphone", e)
+        }
     }
 
     private fun prepareWavHeader(file: File) {
