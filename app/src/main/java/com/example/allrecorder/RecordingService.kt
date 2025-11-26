@@ -36,6 +36,8 @@ import java.text.SimpleDateFormat
 import java.util.*
 import javax.inject.Inject
 import android.media.AudioDeviceInfo
+import androidx.annotation.RequiresApi
+import kotlinx.coroutines.delay
 
 @AndroidEntryPoint
 class RecordingService : Service() {
@@ -77,6 +79,8 @@ class RecordingService : Service() {
     private val binder = LocalBinder()
     private val _audioDataFlow = MutableStateFlow(ByteArray(0))
     val audioDataFlow: StateFlow<ByteArray> = _audioDataFlow.asStateFlow()
+    private lateinit var audioManager: AudioManager
+    private var audioRecordingCallback: AudioManager.AudioRecordingCallback? = null
 
     inner class LocalBinder : android.os.Binder() {
         fun getService(): RecordingService = this@RecordingService
@@ -100,6 +104,44 @@ class RecordingService : Service() {
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AllRecorder::RecordingWakeLock").apply {
             setReferenceCounted(false)
+        }
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+        // Register callback to detect if WE are being silenced by another app
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            audioRecordingCallback = object : AudioManager.AudioRecordingCallback() {
+
+                override fun onRecordingConfigChanged(configs: List<AudioRecordingConfiguration>) {
+                    super.onRecordingConfigChanged(configs)
+                    checkIfWeAreSilenced(configs)
+                }
+            }
+            audioManager.registerAudioRecordingCallback(audioRecordingCallback!!, null)
+        }
+    }
+    @RequiresApi(Build.VERSION_CODES.Q)
+    private fun checkIfWeAreSilenced(configs: List<AudioRecordingConfiguration>) {
+        if (!isRecordingInternal) return
+
+        // 1. Find our own session
+        val myConfig = configs.find { it.clientAudioSessionId == audioRecord?.audioSessionId }
+
+        // 2. Check if we are "silenced" by the OS
+        if (myConfig != null) {
+            if (myConfig.isClientSilenced) {
+                Log.e(TAG, "CRITICAL: Microphone is being used by another app (System/Assistant). We are recording silence.")
+                // Optional: Send broadcast to UI to show a Toast/Warning
+                // sendBroadcast(Intent("com.example.allrecorder.SHOW_TOAST").putExtra("msg", "Microphone blocked by another app!"))
+            } else {
+                Log.i(TAG, "Microphone is active and capturing audio.")
+            }
+        }
+
+        // 3. Debug: List all other apps using the Mic
+        configs.forEach { config ->
+            if (config.clientAudioSessionId != audioRecord?.audioSessionId) {
+                Log.w(TAG, "Another App is recording! Source: ${config.clientAudioSource}, ID: ${config.clientAudioSessionId}")
+            }
         }
     }
 
@@ -201,6 +243,7 @@ class RecordingService : Service() {
             recordingStartTime = System.currentTimeMillis()
             if (isPhoneCallMode) {
                 scope.launch(Dispatchers.Main) {
+                    delay(1500)
                     setSpeakerphoneOn(true)
                 }
             }
@@ -224,14 +267,16 @@ class RecordingService : Service() {
 
         // [NEW] Choose source based on mode
 
-        val audioSource = MediaRecorder.AudioSource.VOICE_RECOGNITION
+        val audioSource = MediaRecorder.AudioSource.MIC
 
 
         try {
             audioRecord = AudioRecord(audioSource, sampleRate, channelConfig, audioFormat, bufferSizeInBytes)
             if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-                // Fallback if VOICE_COMMUNICATION is blocked by device manufacturer
-                Log.w(TAG, "Standard source failed, falling back to MIC")
+                Log.w(TAG, "Preferred source failed, falling back to MIC")
+                // Release the broken instance
+                audioRecord?.release()
+                // Fallback to basic MIC
                 audioRecord = AudioRecord(MediaRecorder.AudioSource.MIC, sampleRate, channelConfig, audioFormat, bufferSizeInBytes)
             }
         } catch (e: Exception) {
@@ -440,17 +485,18 @@ class RecordingService : Service() {
     override fun onDestroy() {
         if (isRecordingInternal) scope.launch { stopRecording(stopService = true) }
         try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch(e:Exception){}
+        if (true && audioRecordingCallback != null) {
+            audioManager.unregisterAudioRecordingCallback(audioRecordingCallback!!)
+        }
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
 
     private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(NOTIFICATION_CHANNEL_ID, "Recording Service", NotificationManager.IMPORTANCE_LOW)
-            channel.setShowBadge(false)
-            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
-        }
+        val channel = NotificationChannel(NOTIFICATION_CHANNEL_ID, "Recording Service", NotificationManager.IMPORTANCE_LOW)
+        channel.setShowBadge(false)
+        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
     private fun createNotification(isRecording: Boolean = true): Notification {
