@@ -10,9 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
-import android.media.AudioFormat
-import android.media.AudioRecord
-import android.media.MediaRecorder
+import android.media.*
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -21,7 +19,6 @@ import android.os.PowerManager
 import android.util.Log
 import androidx.annotation.RequiresPermission
 import androidx.core.app.NotificationCompat
-import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
@@ -45,14 +42,20 @@ class RecordingService : Service() {
     @Inject
     lateinit var recordingDao: RecordingDao
 
-    // --- Audio Engines ---
+    // --- Audio Engine ---
     private var audioRecord: AudioRecord? = null
-    private var mediaRecorder: MediaRecorder? = null
+
+    // --- AAC Encoding (for M4A) ---
+    private var mediaCodec: MediaCodec? = null
+    private var mediaMuxer: MediaMuxer? = null
+    private var audioTrackIndex = -1
+    private var isMuxerStarted = false
+    private var presentationTimeUs = 0L
 
     private var recordingJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO)
 
-    // --- WAV Configuration ---
+    // --- Config ---
     private val sampleRate = 16000
     private val channelConfig = AudioFormat.CHANNEL_IN_MONO
     private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
@@ -60,10 +63,7 @@ class RecordingService : Service() {
 
     // --- State ---
     private var isRecordingInternal = false
-
-    // [MODIFIED] Made public so ViewModel can read it for live timer
     var recordingStartTime: Long = 0
-
     private lateinit var filePath: String
     private var currentFormat: SettingsManager.RecordingFormat = SettingsManager.RecordingFormat.M4A
 
@@ -86,26 +86,22 @@ class RecordingService : Service() {
         var isRecording = false
         const val ACTION_STOP = "com.example.allrecorder.ACTION_STOP"
         const val ACTION_START = "com.example.allrecorder.ACTION_START"
+        // [NEW] Action to restart recording immediately (for format changes)
+        const val ACTION_RESTART = "com.example.allrecorder.ACTION_RESTART"
     }
 
     override fun onCreate() {
         super.onCreate()
         SettingsManager.init(this)
-
-        // [MODERNIZATION] Create the notification channel immediately
         createNotificationChannel()
-
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-        // [FIX] Use PARTIAL_WAKE_LOCK to keep CPU running even if screen is off
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AllRecorder::RecordingWakeLock").apply {
             setReferenceCounted(false)
         }
     }
 
-    // [CRITICAL] Handle "Clear All" / Swipe away from Recents
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
-        // This ensures the service restarts if the system kills the process when the UI is removed
         val restartServiceIntent = Intent(applicationContext, this.javaClass).apply {
             setPackage(packageName)
             action = ACTION_START
@@ -113,8 +109,6 @@ class RecordingService : Service() {
         val restartServicePendingIntent = PendingIntent.getService(
             applicationContext, 1, restartServiceIntent, PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
         )
-
-        // Restart after 1 second
         val alarmService = applicationContext.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
         alarmService.set(
             android.app.AlarmManager.ELAPSED_REALTIME,
@@ -129,11 +123,23 @@ class RecordingService : Service() {
                 scope.launch { stopRecording(stopService = true) }
                 return START_NOT_STICKY
             }
+            ACTION_RESTART -> {
+                // [NEW] Hot Swap Logic
+                if (isRecordingInternal) {
+                    Log.i(TAG, "Restarting recording due to format change...")
+                    scope.launch {
+                        // Stop current, but keep service alive (false)
+                        stopRecording(stopService = false)
+                        // Start new immediately (will pick up new settings)
+                        startRecording()
+                    }
+                }
+                return START_STICKY
+            }
             ACTION_START, null -> {
-                // [FIX] Ensure we are in foreground immediately to prevent ANR/Crash
                 startForegroundSafely()
                 startRecording()
-                return START_STICKY // [CRITICAL] Tells system to recreate service if killed
+                return START_STICKY
             }
             else -> {
                 startRecording()
@@ -162,34 +168,32 @@ class RecordingService : Service() {
             return
         }
 
-        // [FIX] Acquire WakeLock INDEFINITELY. Previous code had 10*60*1000L timeout.
-        try {
-            if (wakeLock?.isHeld == false) {
-                wakeLock?.acquire()
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Wakelock error", e)
-        }
+        try { if (wakeLock?.isHeld == false) wakeLock?.acquire() } catch (e: Exception) {}
 
+        // Read the LATEST format from settings
         currentFormat = SettingsManager.recordingFormat
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val fileName = "Rec_$timeStamp${currentFormat.extension}"
         filePath = File(filesDir, fileName).absolutePath
 
         try {
+            prepareAudioRecord()
+
             if (currentFormat == SettingsManager.RecordingFormat.WAV) {
-                startWavRecording(File(filePath))
+                prepareWavHeader(File(filePath))
             } else {
-                startM4aRecording(filePath)
+                prepareAacEncoder(filePath)
             }
 
+            audioRecord?.startRecording()
             isRecordingInternal = true
             isRecording = true
             recordingStartTime = System.currentTimeMillis()
 
-            // Update notification content
             val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.notify(NOTIFICATION_ID, createNotification(isRecording = true))
+
+            recordingJob = scope.launch { processAudioLoop() }
 
             scheduleNextChunk()
 
@@ -200,51 +204,105 @@ class RecordingService : Service() {
     }
 
     @RequiresPermission(Manifest.permission.RECORD_AUDIO)
-    private fun startWavRecording(file: File) {
-        writePlaceholderWavHeader(file)
+    private fun prepareAudioRecord() {
         val bufferSizeInBytes = bufferSize * 2
-        audioRecord = AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, sampleRate, channelConfig, audioFormat, bufferSizeInBytes).apply {
-            if (state != AudioRecord.STATE_INITIALIZED) throw IOException("AudioRecord init failed")
-            startRecording()
-        }
-        recordingJob = scope.launch { writeAudioDataToFile(file.absolutePath) }
+        audioRecord = AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, sampleRate, channelConfig, audioFormat, bufferSizeInBytes)
+        if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) throw IOException("AudioRecord init failed")
     }
 
-    private fun startM4aRecording(path: String) {
-        mediaRecorder = (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(this) else @Suppress("DEPRECATION") MediaRecorder()).apply {
-            setAudioSource(MediaRecorder.AudioSource.MIC)
-            setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            // [OPTIONAL] Lower bitrate slightly for 24/7 size efficiency if desired
-            setAudioEncodingBitRate(64000)
-            setAudioSamplingRate(16000)
-            setOutputFile(path)
-            prepare()
-            start()
-        }
+    private fun prepareWavHeader(file: File) {
+        FileOutputStream(file).use { out -> out.write(ByteArray(44)) }
     }
 
-    private suspend fun writeAudioDataToFile(path: String) {
+    private fun prepareAacEncoder(path: String) {
+        presentationTimeUs = 0L
+        isMuxerStarted = false
+        audioTrackIndex = -1
+
+        val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, 1)
+        format.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+        format.setInteger(MediaFormat.KEY_BIT_RATE, 64000)
+        format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
+
+        mediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
+        mediaCodec?.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        mediaCodec?.start()
+
+        mediaMuxer = MediaMuxer(path, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+    }
+
+    private suspend fun processAudioLoop() {
         val data = ByteArray(bufferSize)
-        val fileOutputStream = FileOutputStream(path, true)
+        val wavOutputStream = if (currentFormat == SettingsManager.RecordingFormat.WAV) FileOutputStream(filePath, true) else null
         var totalBytesWritten = 0L
+
         try {
             while (isRecordingInternal) {
-                // Blocking read is fine here inside IO dispatcher
                 val read = audioRecord?.read(data, 0, bufferSize) ?: 0
                 if (read > 0) {
                     _audioDataFlow.value = data.clone()
-                    fileOutputStream.write(data, 0, read)
-                    totalBytesWritten += read
+
+                    if (currentFormat == SettingsManager.RecordingFormat.WAV) {
+                        wavOutputStream?.write(data, 0, read)
+                        totalBytesWritten += read
+                    } else {
+                        encodeAac(data, read)
+                    }
                 }
             }
-        } catch (e: IOException) {
-            Log.e(TAG, "Error writing WAV", e)
+        } catch (e: Exception) {
+            Log.e(TAG, "Recording Loop Error", e)
         } finally {
-            try {
-                fileOutputStream.close()
-                updateWavHeader(File(path), totalBytesWritten.toInt())
-            } catch (e: Exception) {}
+            if (currentFormat == SettingsManager.RecordingFormat.WAV) {
+                try {
+                    wavOutputStream?.close()
+                    updateWavHeader(File(filePath), totalBytesWritten.toInt())
+                } catch (e: Exception) {}
+            }
+        }
+    }
+
+    private fun encodeAac(pcmData: ByteArray, length: Int) {
+        val codec = mediaCodec ?: return
+
+        try {
+            val inputIndex = codec.dequeueInputBuffer(0)
+            if (inputIndex >= 0) {
+                val inputBuffer = codec.getInputBuffer(inputIndex)
+                inputBuffer?.clear()
+                inputBuffer?.put(pcmData, 0, length)
+
+                val samples = length / 2
+                val currentPts = presentationTimeUs
+                presentationTimeUs += (samples * 1000000L / sampleRate)
+
+                codec.queueInputBuffer(inputIndex, 0, length, currentPts, 0)
+            }
+
+            val bufferInfo = MediaCodec.BufferInfo()
+            var outputIndex = codec.dequeueOutputBuffer(bufferInfo, 0)
+
+            // [COMPLETE] Robust loop handling Format Change
+            while (outputIndex != MediaCodec.INFO_TRY_AGAIN_LATER) {
+                if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    // Muxer must start only after format change
+                    audioTrackIndex = mediaMuxer?.addTrack(codec.outputFormat) ?: -1
+                    mediaMuxer?.start()
+                    isMuxerStarted = true
+                } else if (outputIndex >= 0) {
+                    val encodedData = codec.getOutputBuffer(outputIndex)
+                    if (encodedData != null && isMuxerStarted && (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
+                        encodedData.position(bufferInfo.offset)
+                        encodedData.limit(bufferInfo.offset + bufferInfo.size)
+                        mediaMuxer?.writeSampleData(audioTrackIndex, encodedData, bufferInfo)
+                    }
+                    codec.releaseOutputBuffer(outputIndex, false)
+                }
+                outputIndex = codec.dequeueOutputBuffer(bufferInfo, 0)
+            }
+
+        } catch (e: Exception) {
+            Log.e(TAG, "AAC Encoding failed", e)
         }
     }
 
@@ -255,24 +313,24 @@ class RecordingService : Service() {
         isRecording = false
         cancelChunking()
 
-        val duration = System.currentTimeMillis() - recordingStartTime
-        val savedPath = filePath
+        try { audioRecord?.stop(); audioRecord?.release() } catch (e: Exception) {}
+        audioRecord = null
 
-        try {
-            if (currentFormat == SettingsManager.RecordingFormat.WAV) {
-                stopWavEngine()
-            } else {
-                stopM4aEngine()
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error stopping recorder", e)
+        recordingJob?.join()
+        recordingJob = null
+
+        if (currentFormat == SettingsManager.RecordingFormat.M4A) {
+            try {
+                mediaCodec?.stop()
+                mediaCodec?.release()
+                if (isMuxerStarted) {
+                    mediaMuxer?.stop()
+                }
+                mediaMuxer?.release()
+            } catch (e: Exception) { Log.e(TAG, "Muxer closing error", e) }
         }
 
-        saveRecordingToDatabase(savedPath, recordingStartTime, duration)
-
-        // [FIX] Release WakeLock only if we are actually stopping the service,
-        // OR if we are just chunking (restarting immediately) we might want to keep it.
-        // But safe practice is to release and re-acquire in start().
+        saveRecordingToDatabase(filePath, recordingStartTime, System.currentTimeMillis() - recordingStartTime)
         try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (e: Exception) {}
 
         if (stopService) {
@@ -284,24 +342,6 @@ class RecordingService : Service() {
         }
     }
 
-    private suspend fun stopWavEngine() {
-        audioRecord?.apply {
-            try { stop() } catch (e: Exception) {}
-            release()
-        }
-        audioRecord = null
-        recordingJob?.join()
-        recordingJob = null
-    }
-
-    private fun stopM4aEngine() {
-        mediaRecorder?.apply {
-            try { stop() } catch (e: RuntimeException) {}
-            release()
-        }
-        mediaRecorder = null
-    }
-
     private suspend fun saveRecordingToDatabase(path: String, startTime: Long, duration: Long) {
         val newRecording = Recording(filePath = path, startTime = startTime, duration = duration, processingStatus = 0)
         recordingDao.insert(newRecording)
@@ -309,12 +349,9 @@ class RecordingService : Service() {
 
     private fun scheduleNextChunk() {
         val chunkDurationMillis = SettingsManager.chunkDurationMillis
-        // [ADVICE] For 24/7, ensure chunkDurationMillis is set (e.g., 1 hour = 3600000L)
-        // to prevent single massive files that are hard to open.
         if (chunkDurationMillis > 0) {
             chunkRunnable = Runnable {
                 scope.launch {
-                    Log.d(TAG, "Chunking recording...")
                     stopRecording(stopService = false)
                     startRecording()
                 }
@@ -329,9 +366,7 @@ class RecordingService : Service() {
     }
 
     override fun onDestroy() {
-        if (isRecordingInternal) {
-            scope.launch { stopRecording(stopService = true) }
-        }
+        if (isRecordingInternal) scope.launch { stopRecording(stopService = true) }
         try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch(e:Exception){}
         super.onDestroy()
     }
@@ -349,26 +384,18 @@ class RecordingService : Service() {
     private fun createNotification(isRecording: Boolean = true): Notification {
         val stopIntent = Intent(this, RecordingService::class.java).apply { action = ACTION_STOP }
         val stopPendingIntent = PendingIntent.getService(this, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-
-        // Open App Intent
         val openIntent = Intent(this, MainActivity::class.java)
         val openPendingIntent = PendingIntent.getActivity(this, 0, openIntent, PendingIntent.FLAG_IMMUTABLE)
 
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setContentTitle("AllRecorder 24/7")
             .setContentText(if (isRecording) "Recording continuously..." else "Saving...")
-            .setSmallIcon(R.drawable.ic_launcher_foreground) // Ensure this resource exists
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setOngoing(true)
             .setContentIntent(openPendingIntent)
             .addAction(R.drawable.ic_launcher_foreground, "Stop", stopPendingIntent)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .build()
-    }
-
-    // ... (Keep existing writePlaceholderWavHeader and updateWavHeader) ...
-    @Throws(IOException::class)
-    private fun writePlaceholderWavHeader(file: File) {
-        FileOutputStream(file).use { out -> out.write(ByteArray(44)) }
     }
 
     @Throws(IOException::class)
