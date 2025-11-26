@@ -1,6 +1,7 @@
 package com.example.allrecorder
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.pm.PackageManager
 import android.os.Build
@@ -28,14 +29,12 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
@@ -65,9 +64,10 @@ import kotlinx.coroutines.launch
 import dagger.hilt.android.AndroidEntryPoint
 import android.os.PowerManager
 import android.provider.Settings
-import android.net.Uri
 import android.content.Context
 import android.content.Intent
+import androidx.core.net.toUri
+import android.app.role.RoleManager
 
 enum class Screen {
     Home, Starred, Tags
@@ -75,6 +75,15 @@ enum class Screen {
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+    private val roleRequestLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            Toast.makeText(this, "Success! App is now the default Call Handler.", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(this, "Failed. Call recording may be less reliable.", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     private val requestPermissionLauncher =
         registerForActivityResult(
@@ -88,6 +97,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+    @SuppressLint("BatteryLife")
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -115,9 +125,24 @@ class MainActivity : ComponentActivity() {
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
             val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                data = Uri.parse("package:$packageName")
+                data = "package:$packageName".toUri()
             }
             startActivity(intent)
+        }
+    }
+    private fun requestCallScreeningRole() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val roleManager = getSystemService(RoleManager::class.java)
+            if (roleManager.isRoleAvailable(RoleManager.ROLE_CALL_SCREENING)) {
+                if (roleManager.isRoleHeld(RoleManager.ROLE_CALL_SCREENING)) {
+                    Toast.makeText(this, "App is already the default.", Toast.LENGTH_SHORT).show()
+                } else {
+                    val intent = roleManager.createRequestRoleIntent(RoleManager.ROLE_CALL_SCREENING)
+                    roleRequestLauncher.launch(intent)
+                }
+            }
+        } else {
+            Toast.makeText(this, "Not available on this Android version.", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -318,6 +343,26 @@ class MainActivity : ComponentActivity() {
                 NavigationDrawerItem(icon = { Icon(Icons.AutoMirrored.Filled.Label, null) }, label = { Text("Tags") }, selected = currentScreen == Screen.Tags, onClick = { onScreenSelected(Screen.Tags) })
                 NavigationDrawerItem(icon = { Icon(Icons.Default.Star, null) }, label = { Text("Starred") }, selected = currentScreen == Screen.Starred, onClick = { onScreenSelected(Screen.Starred) })
 
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+                Text("Call Recording Setup", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium, color = RetroPrimary)
+
+                val context = LocalContext.current
+
+                NavigationDrawerItem(
+                    label = {
+                        Column {
+                            Text("Set as Default App")
+                            Text("Required for robust recording", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                        }
+                    },
+                    icon = { Icon(Icons.Default.Star, contentDescription = null) },
+                    selected = false,
+                    onClick = {
+                        // Call the function we added to MainActivity
+                        (context as? MainActivity)?.requestCallScreeningRole()
+                    }
+                )
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
                 // --- VISUALIZER STYLE SECTION ---

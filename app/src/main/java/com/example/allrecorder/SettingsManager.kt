@@ -116,4 +116,8 @@ object SettingsManager {
     var asrModel: String
         get() = prefs.getString("asr_model", "tiny") ?: "tiny"
         set(value) = prefs.edit().putString("asr_model", value).apply()
+
+    var callRecordingEnabled: Boolean
+        get() = prefs.getBoolean("call_recording_enabled", true) // Default is TRUE
+        set(value) = prefs.edit().putBoolean("call_recording_enabled", value).apply()
 }
