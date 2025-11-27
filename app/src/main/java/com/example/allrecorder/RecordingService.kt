@@ -37,6 +37,7 @@ import java.util.*
 import javax.inject.Inject
 import android.media.AudioDeviceInfo
 import androidx.annotation.RequiresApi
+import com.example.allrecorder.widgets.WidgetManager
 import kotlinx.coroutines.delay
 
 @AndroidEntryPoint
@@ -242,6 +243,9 @@ class RecordingService : Service() {
             isRecordingInternal = true
             isRecording = true
             recordingStartTime = System.currentTimeMillis()
+            scope.launch {
+                WidgetManager.updateWidgets(applicationContext, true, recordingStartTime)
+            }
             if (isPhoneCallMode) {
                 scope.launch(Dispatchers.Main) {
                     delay(1500)
@@ -341,7 +345,7 @@ class RecordingService : Service() {
         mediaMuxer = MediaMuxer(path, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
     }
 
-    private suspend fun processAudioLoop() {
+    private fun processAudioLoop() {
         val data = ByteArray(bufferSize)
         val wavOutputStream = if (currentFormat == SettingsManager.RecordingFormat.WAV) FileOutputStream(filePath, true) else null
         var totalBytesWritten = 0L
@@ -421,6 +425,9 @@ class RecordingService : Service() {
 
         isRecordingInternal = false
         isRecording = false
+        scope.launch {
+            WidgetManager.updateWidgets(applicationContext, false, 0L)
+        }
         cancelChunking()
 
         try { audioRecord?.stop(); audioRecord?.release() } catch (e: Exception) {}
