@@ -19,12 +19,12 @@ object AudioDecoder {
      * Decodes an audio file into a FloatArray of normalized PCM samples (-1.0 to 1.0).
      *
      * @param audioFilePath Path to the input file (m4a, mp3, wav, etc.)
-     * @param expectedSampleRate The sample rate the AI expects (default 16000).
+     * @param //expectedSampleRate The sample rate the AI expects (default 16000).
      * Note: This decoder currently assumes the input file matches
      * this rate or that the AI can handle the file's native rate.
      * For robust production apps, a Resampler is needed if rates mismatch.
      */
-    fun decodeToPcm(audioFilePath: String, expectedSampleRate: Int = 16000): FloatArray? {
+    fun decodeToPcm(audioFilePath: String): FloatArray? {
         val file = File(audioFilePath)
         if (!file.exists()) {
             Log.e(TAG, "File not found: $audioFilePath")

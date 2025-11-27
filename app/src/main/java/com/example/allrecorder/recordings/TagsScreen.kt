@@ -118,7 +118,7 @@ fun TagsScreen(viewModel: RecordingsViewModel) {
                             },
                             onDuplicate = {
                                 // Add "duplicate" tag
-                                viewModel.duplicateRecording(context, uiState.recording, "duplicate")
+                                viewModel.duplicateRecording( uiState.recording, "duplicate")
                             },
                             onTrimConfirm = { start, end, copy ->
                                 // Add "trimmed" tag
@@ -128,9 +128,9 @@ fun TagsScreen(viewModel: RecordingsViewModel) {
                             onStopPreview = { viewModel.stopPlayback() },
 
                             onDelete = { viewModel.deleteRecording(context, uiState.recording) },
-                            onTranscribe = { viewModel.transcribeRecording(context, uiState.recording) },
+                            onTranscribe = { viewModel.transcribeRecording( uiState.recording) },
                             onToggleStar = { viewModel.toggleStar(uiState.recording) },
-                            onSaveToDownloads = { viewModel.saveRecordingAs(context, uiState.recording) },
+                            onSaveToDownloads = { viewModel.saveRecordingAs( uiState.recording) },
                             onExpand = { viewModel.loadAmplitudes(uiState.recording) },
                             onToggleSpeed = { viewModel.togglePlaybackSpeed(uiState.recording) },
 

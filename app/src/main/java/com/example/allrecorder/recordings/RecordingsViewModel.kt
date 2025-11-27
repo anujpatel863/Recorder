@@ -11,26 +11,37 @@ import android.media.MediaPlayer
 import android.os.Build
 import android.os.IBinder
 import android.os.VibrationEffect
-import android.widget.EditText
 import androidx.annotation.RequiresApi
+import androidx.annotation.RequiresPermission
 import androidx.appcompat.app.AlertDialog
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.allrecorder.*
+import com.example.allrecorder.Recording
+import com.example.allrecorder.RecordingService
+import com.example.allrecorder.SettingsManager
+import com.example.allrecorder.TranscriptExporter
 import com.example.allrecorder.data.RecordingsRepository
+import com.example.allrecorder.formatDuration
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
-import java.io.File
+import kotlinx.coroutines.launch
 import javax.inject.Inject
-import androidx.annotation.RequiresPermission
 
 
 @HiltViewModel
@@ -40,7 +51,7 @@ class RecordingsViewModel @Inject constructor(
 ) : AndroidViewModel(application) {
 
     var isServiceRecording by mutableStateOf(RecordingService.isRecording)
-        private set
+
 
     @SuppressLint("StaticFieldLeak")
     private var recordingService: RecordingService? = null
@@ -97,7 +108,7 @@ class RecordingsViewModel @Inject constructor(
 
     // [NEW] Re-indexing State
     var showReindexDialog by mutableStateOf(false)
-    var reindexProgress by mutableStateOf(0f)
+    var reindexProgress by mutableFloatStateOf(0f)
     var isReindexing by mutableStateOf(false)
 
     // 1. All Recordings
@@ -196,13 +207,7 @@ class RecordingsViewModel @Inject constructor(
         _tagFilter.value = tag
     }
 
-    fun addTag(recording: Recording, newTag: String) {
-        if (newTag.isBlank() || recording.tags.contains(newTag)) return
-        viewModelScope.launch(Dispatchers.IO) {
-            val updatedTags = recording.tags + newTag.trim()
-            repository.updateRecording(recording.copy(tags = updatedTags))
-        }
-    }
+
 
     fun removeTag(recording: Recording, tagToRemove: String) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -251,11 +256,11 @@ class RecordingsViewModel @Inject constructor(
     }
 
     @RequiresApi(Build.VERSION_CODES.Q)
-    fun saveRecordingAs(context: Context, recording: Recording) {
+    fun saveRecordingAs( recording: Recording) {
         viewModelScope.launch { repository.saveRecordingAs(recording) }
     }
 
-    fun transcribeRecording(context: Context, recording: Recording) {
+    fun transcribeRecording( recording: Recording) {
         viewModelScope.launch {
             _transcriptionProgress.value = TranscriptionProgress(recording.id, 0f, "Starting...")
             repository.transcribeRecording(recording) { progress, message ->
@@ -292,9 +297,7 @@ class RecordingsViewModel @Inject constructor(
         playbackSpeeds[recording.id] = newSpeed
 
         if (_playerState.value.playingRecordingId == recording.id) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                try { mediaPlayer?.let { it.playbackParams = it.playbackParams.setSpeed(newSpeed) } } catch (e: Exception) {}
-            }
+            try { mediaPlayer?.let { it.playbackParams = it.playbackParams.setSpeed(newSpeed) } } catch (e: Exception) {}
         }
         _transcriptionProgress.value = _transcriptionProgress.value.copy()
     }
@@ -319,7 +322,7 @@ class RecordingsViewModel @Inject constructor(
                 if (isResume && _playerState.value.currentPosition > 0) seekTo(_playerState.value.currentPosition)
 
                 val speedToUse = playbackSpeeds[recording.id] ?: 1.0f
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) playbackParams = playbackParams.setSpeed(speedToUse)
+                playbackParams = playbackParams.setSpeed(speedToUse)
 
                 setOnCompletionListener { stopPlayback() }
             } catch (e: Exception) {
@@ -411,18 +414,14 @@ class RecordingsViewModel @Inject constructor(
         }
     }
 
-    fun updateTranscript(recording: Recording, newText: String) {
-        viewModelScope.launch {
-            repository.updateTranscript(recording, newText)
-        }
-    }
+
 
     fun exportTranscript(context: Context, recording: Recording, format: TranscriptExporter.Format) {
         viewModelScope.launch(Dispatchers.IO) {
             TranscriptExporter.export(context, recording, format)
         }
     }
-    fun duplicateRecording(context: Context, recording: Recording, tagToAdd: String? = null) {
+    fun duplicateRecording( recording: Recording, tagToAdd: String? = null) {
         viewModelScope.launch {
             repository.duplicateRecording(recording, tagToAdd)
         }

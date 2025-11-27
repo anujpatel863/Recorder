@@ -11,5 +11,3 @@ val RetroTextSecondary = Color(0xFF93A1A1)
 val RetroCardBackground = Color(0xFFEEE8D5)
 val RetroCardStroke = Color(0xFF93A1A1)
 
-val White = Color(0xFFFFFFFFFF)
-val Black = Color(0xFF000000)

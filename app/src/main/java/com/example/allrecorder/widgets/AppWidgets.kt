@@ -2,7 +2,6 @@ package com.example.allrecorder.widgets
 
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.os.SystemClock
 import android.widget.RemoteViews
 import androidx.compose.runtime.Composable
@@ -27,7 +26,6 @@ import androidx.glance.appwidget.GlanceAppWidgetManager
 import androidx.glance.appwidget.GlanceAppWidgetReceiver
 import androidx.glance.appwidget.action.ActionCallback
 import androidx.glance.appwidget.action.actionRunCallback
-import androidx.glance.appwidget.action.actionStartActivity
 import androidx.glance.appwidget.cornerRadius
 import androidx.glance.appwidget.provideContent
 import androidx.glance.appwidget.state.updateAppWidgetState
@@ -69,11 +67,7 @@ class ToggleRecordingAction : ActionCallback {
             context.startService(intent)
         } else {
             val intent = Intent(context, RecordingService::class.java).apply { action = RecordingService.ACTION_START }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
+            context.startForegroundService(intent)
         }
     }
 }

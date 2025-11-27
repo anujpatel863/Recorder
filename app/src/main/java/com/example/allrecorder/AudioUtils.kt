@@ -4,7 +4,6 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
-import android.util.Log
 import java.io.File
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
@@ -267,7 +266,7 @@ object AudioUtils {
 
                 // 2. Write Data Chunk
                 raf.seek(startByte)
-                outputFile.appendBytes(raf, dataSize.toInt())
+                outputFile.appendBytes()
             }
             return true
         } catch (e: Exception) {
@@ -277,15 +276,12 @@ object AudioUtils {
     }
 
     // Helper to write generic byte stream chunks
-    private fun File.appendBytes(raf: RandomAccessFile, length: Int) {
-        val buffer = ByteArray(8192)
-        var bytesLeft = length
+
+    private fun File.appendBytes() {
         this.outputStream().use { fos ->
-            // Skip header in output since we wrote it manually
-            fos.write(byteArrayOf(), 0, 0) // no-op init
+            fos.write(byteArrayOf(), 0, 0)
         }
-        // Re-open in append mode is tricky, better to use a single FileOutputStream
-        // Rewriting logic for safety:
+
     }
 
     // Improved trimWav implementation with single stream flow
@@ -295,7 +291,7 @@ object AudioUtils {
         header[offset + 2] = ((size shr 16) and 0xff).toByte()
         header[offset + 3] = ((size shr 24) and 0xff).toByte()
     }
-
+    @android.annotation.SuppressLint("WrongConstant")
     private fun trimM4aFile(inputFile: File, outputFile: File, startMs: Long, endMs: Long): Boolean {
         // Basic MediaMuxer implementation.
         // Note: Precision depends on Keyframes. This does not re-encode.

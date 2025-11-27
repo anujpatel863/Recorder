@@ -144,7 +144,7 @@ class TranscriptionOrchestrator(
         }
 
         val recognizer = offlineRecognizer ?: return emptyList()
-        val audioSamples = AudioDecoder.decodeToPcm(filePath, SAMPLE_RATE)
+        val audioSamples = AudioDecoder.decodeToPcm(filePath)
 
         if (audioSamples == null || audioSamples.isEmpty()) {
             Log.e(TAG, "Failed to decode audio file or file is empty.")

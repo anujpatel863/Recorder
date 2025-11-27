@@ -1,5 +1,7 @@
 package com.example.allrecorder.models
 
+
+
 data class ModelSpec(
     val id: String,
     val fileName: String,
@@ -7,6 +9,7 @@ data class ModelSpec(
     val type: ModelType,
     val description: String,
     val sha256: String? = null
+    val sizeBytes: Long = 0
 )
 data class ModelBundle(
     val id: String, // e.g., "bundle_asr_tiny"
@@ -14,14 +17,14 @@ data class ModelBundle(
     val description: String,
     val modelIds: List<String> // List of file IDs from ModelSpec
 ) {
-    // Helper to calculate total size string
+
+
+
+    // In ModelBundle
     fun getTotalSize(specs: List<ModelSpec>): String {
-        val totalBytes = specs.filter { it.id in modelIds }.sumOf {
-            // You might want to add a sizeBytes long to ModelSpec in the future
-            // For now, we'll just use a placeholder or parse the string if you added it
-            0L
-        }
-        return "Unknown Size" // Update this if you add byte sizes to ModelSpec
+        val totalBytes = specs.filter { it.id in modelIds }.sumOf { it.sizeBytes }
+        if (totalBytes == 0L) return "Unknown Size"
+        return "${totalBytes / 1024 / 1024} MB" // Convert to MB
     }
 }
 

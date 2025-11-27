@@ -18,7 +18,7 @@ class ModelManager(private val context: Context) {
     }
 
     /**
-     * [FIX] This is the function that was missing.
+     * //[FIX] This is the function that was missing.
      * It returns the absolute path to the model file so Mediapipe can load it.
      */
     fun getModelPath(spec: ModelSpec): String {

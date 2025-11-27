@@ -23,7 +23,7 @@ import java.util.concurrent.TimeUnit
 import android.content.pm.ServiceInfo
 
 class ModelDownloadWorker(
-    private val context: Context,
+    context: Context,
     params: WorkerParameters
 ) : CoroutineWorker(context, params) {
 
@@ -139,13 +139,11 @@ class ModelDownloadWorker(
     }
 
     private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                "model_download_channel",
-                "Model Downloads",
-                NotificationManager.IMPORTANCE_LOW
-            )
-            notificationManager.createNotificationChannel(channel)
-        }
+        val channel = NotificationChannel(
+            "model_download_channel",
+            "Model Downloads",
+            NotificationManager.IMPORTANCE_LOW
+        )
+        notificationManager.createNotificationChannel(channel)
     }
 }

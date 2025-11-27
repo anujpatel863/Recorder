@@ -1,7 +1,2 @@
 <?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <plurals name="speaker_count">
-        <item quantity="one">%d Speaker</item>
-        <item quantity="other">%d Speakers</item>
-    </plurals>
-</resources>
+<resources></resources>

@@ -1,7 +1,6 @@
 package com.example.allrecorder.ui.components
 
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -10,7 +9,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.Error
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -162,7 +160,9 @@ fun ModelBundleItem(
                     ) {
                         Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Download (${bundle.modelIds.size} files)")
+                        // [MODIFIED] Use getTotalSize here
+                        val sizeString = bundle.getTotalSize(ModelRegistry.availableModels)
+                        Text("Download ($sizeString)")
                     }
                 }
             }

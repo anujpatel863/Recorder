@@ -2,7 +2,6 @@ package com.example.allrecorder.recordings
 
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -29,10 +28,11 @@ import kotlin.math.sin
 @Composable
 fun AudioVisualizer(
     audioData: ByteArray,
+    modifier: Modifier = Modifier,
     activeColor: Color = MaterialTheme.colorScheme.primary,
     secondaryColor: Color = MaterialTheme.colorScheme.tertiary,
-    useGradient: Boolean = true,
-    modifier: Modifier = Modifier
+    useGradient: Boolean = true
+
 ) {
     // [ROBUSTNESS] Temporal Smoothing State
     val pointsCount = 40

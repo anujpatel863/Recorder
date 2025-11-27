@@ -59,9 +59,9 @@ class ModelManagementViewModel @Inject constructor(
             var progress = 0f
             if (isDownloading) {
                 val totalWorkers = bundle.modelIds.size
-                val progressSum = activeWorkers.map {
+                val progressSum = activeWorkers.sumOf {
                     it.progress.getInt("progress", 0)
-                }.sum()
+                }
                 // Add 100% for workers that finished already in this session
                 val finishedCount = workInfos.count { it.state == WorkInfo.State.SUCCEEDED }
 

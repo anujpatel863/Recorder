@@ -9,6 +9,7 @@ import com.google.mediapipe.tasks.text.textembedder.TextEmbedder
 import com.google.mediapipe.tasks.text.textembedder.TextEmbedder.TextEmbedderOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlin.math.sqrt
 
 // [FIX] Accept ModelManager in constructor
 class EmbeddingManager(
@@ -82,7 +83,7 @@ class EmbeddingManager(
         }
 
         if (normA == 0.0 || normB == 0.0) return 0f
-        return (dotProduct / (Math.sqrt(normA) * Math.sqrt(normB))).toFloat()
+        return (dotProduct / (sqrt(normA) * sqrt(normB))).toFloat()
     }
 
     fun close() {

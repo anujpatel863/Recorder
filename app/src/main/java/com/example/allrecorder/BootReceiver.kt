@@ -3,9 +3,9 @@ package com.example.allrecorder
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.util.Log
 
+@Suppress("PrivatePropertyName")
 class BootReceiver : BroadcastReceiver() {
 
     private val TAG = "BootReceiver"

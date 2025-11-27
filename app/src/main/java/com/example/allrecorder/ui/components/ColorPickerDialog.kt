@@ -16,13 +16,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
-import kotlin.math.max
-import kotlin.math.min
 
 @Composable
 fun ColorPickerDialog(
@@ -36,7 +33,6 @@ fun ColorPickerDialog(
     var value by remember { mutableFloatStateOf(1f) }
 
     LaunchedEffect(initialColor) {
-        val color = Color(initialColor)
         val hsv = FloatArray(3)
         android.graphics.Color.colorToHSV(initialColor, hsv)
         hue = hsv[0]

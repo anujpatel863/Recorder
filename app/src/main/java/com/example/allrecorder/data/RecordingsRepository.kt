@@ -135,7 +135,7 @@ class RecordingsRepository @Inject constructor(
                 filePath = destFile.absolutePath,
                 startTime = System.currentTimeMillis(),
                 tags = newTags,
-                transcript = if (newTranscript.isBlank()) null else newTranscript,
+                transcript = newTranscript.ifBlank { null },
                 embedding = finalEmbedding,
                 isStarred = false,
                 processingStatus = if (newTranscript.isNotBlank()) Recording.STATUS_COMPLETED else originalRecording.processingStatus
@@ -182,7 +182,7 @@ class RecordingsRepository @Inject constructor(
         // 3. Update DB
         val updated = currentRecording.copy(
             tags = newTags,
-            transcript = if (newTranscript.isBlank()) null else newTranscript,
+            transcript = newTranscript.ifBlank { null },
             embedding = updatedEmbedding,
             processingStatus = if (newTranscript.isNotBlank()) Recording.STATUS_COMPLETED else currentRecording.processingStatus
         )
@@ -301,14 +301,7 @@ class RecordingsRepository @Inject constructor(
         }
     }
 
-    suspend fun renameRecording(recording: Recording, newName: String) = withContext(Dispatchers.IO) {
-        val oldFile = File(recording.filePath)
-        val newFile = File(oldFile.parent, "$newName.wav")
-        if (oldFile.renameTo(newFile)) {
-            val renamedRecording = recording.copy(filePath = newFile.absolutePath)
-            recordingDao.update(renamedRecording)
-        }
-    }
+
 
     suspend fun deleteRecording(recording: Recording) = withContext(Dispatchers.IO) {
         val file = File(recording.filePath)

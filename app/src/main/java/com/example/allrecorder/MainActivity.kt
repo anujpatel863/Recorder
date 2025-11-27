@@ -64,7 +64,6 @@ import kotlinx.coroutines.launch
 import dagger.hilt.android.AndroidEntryPoint
 import android.os.PowerManager
 import android.provider.Settings
-import android.content.Context
 import android.content.Intent
 import androidx.core.net.toUri
 import android.app.role.RoleManager
@@ -78,7 +77,7 @@ class MainActivity : ComponentActivity() {
     private val roleRequestLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
+        if (result.resultCode == RESULT_OK) {
             Toast.makeText(this, "Success! App is now the default Call Handler.", Toast.LENGTH_SHORT).show()
         } else {
             Toast.makeText(this, "Failed. Call recording may be less reliable.", Toast.LENGTH_SHORT).show()
@@ -122,7 +121,7 @@ class MainActivity : ComponentActivity() {
                 MainAppScreen()
             }
         }
-        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        val powerManager = getSystemService(POWER_SERVICE) as PowerManager
         if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
             val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
                 data = "package:$packageName".toUri()
@@ -334,7 +333,7 @@ class MainActivity : ComponentActivity() {
         val currentSecondaryColor by SettingsManager.visualizerColorSecondaryFlow.collectAsState()
         val currentGradientState by SettingsManager.visualizerGradientFlow.collectAsState()
         var autoDeleteEnabled by remember { mutableStateOf(SettingsManager.autoDeleteEnabled) }
-        var retentionDays by remember { mutableStateOf(SettingsManager.retentionDays) }
+        var retentionDays by remember { mutableIntStateOf(SettingsManager.retentionDays) }
         var protectedTag by remember { mutableStateOf(SettingsManager.protectedTag) }
 
         val context = LocalContext.current
@@ -695,7 +694,7 @@ class MainActivity : ComponentActivity() {
         val currentFormat = SettingsManager.recordingFormat
         AlertDialog(
             onDismissRequest = onDismiss, title = { Text("Recording Format") },
-            text = { Column { SettingsManager.RecordingFormat.values().forEach { format -> val isSelected = (format == currentFormat); Row(Modifier.fillMaxWidth().clickable { onFormatSelected(format); onDismiss() }.padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) { RadioButton(selected = isSelected, onClick = { onFormatSelected(format); onDismiss() }); Column(modifier = Modifier.padding(start = 12.dp)) { Text(text = if (format == SettingsManager.RecordingFormat.WAV) "WAV (High Quality)" else "M4A (AAC)", style = MaterialTheme.typography.bodyLarge, fontWeight = if(isSelected) FontWeight.Bold else FontWeight.Normal); Text(text = if (format == SettingsManager.RecordingFormat.WAV) "Uncompressed. Large file size. Instant waveform." else "Compressed. Small file size (10x smaller).", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } } } } },
+            text = { Column { SettingsManager.RecordingFormat.entries.forEach { format -> val isSelected = (format == currentFormat); Row(Modifier.fillMaxWidth().clickable { onFormatSelected(format); onDismiss() }.padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) { RadioButton(selected = isSelected, onClick = { onFormatSelected(format); onDismiss() }); Column(modifier = Modifier.padding(start = 12.dp)) { Text(text = if (format == SettingsManager.RecordingFormat.WAV) "WAV (High Quality)" else "M4A (AAC)", style = MaterialTheme.typography.bodyLarge, fontWeight = if(isSelected) FontWeight.Bold else FontWeight.Normal); Text(text = if (format == SettingsManager.RecordingFormat.WAV) "Uncompressed. Large file size. Instant waveform." else "Compressed. Small file size (10x smaller).", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } } } } },
             confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
         )
     }

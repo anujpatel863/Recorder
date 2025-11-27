@@ -1,44 +1,53 @@
 package com.example.allrecorder
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
-import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
-import android.media.*
+import android.media.AudioDeviceInfo
+import android.media.AudioFormat
+import android.media.AudioManager
+import android.media.AudioRecord
+import android.media.AudioRecordingConfiguration
+import android.media.MediaCodec
+import android.media.MediaCodecInfo
+import android.media.MediaFormat
+import android.media.MediaMuxer
+import android.media.MediaRecorder
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
+import androidx.annotation.RequiresApi
 import androidx.annotation.RequiresPermission
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import com.example.allrecorder.widgets.WidgetManager
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.RandomAccessFile
 import java.text.SimpleDateFormat
-import java.util.*
+import java.util.Date
+import java.util.Locale
 import javax.inject.Inject
-import android.media.AudioDeviceInfo
-import androidx.annotation.RequiresApi
-import com.example.allrecorder.widgets.WidgetManager
-import kotlinx.coroutines.delay
 
 @AndroidEntryPoint
 class RecordingService : Service() {
@@ -102,23 +111,23 @@ class RecordingService : Service() {
         super.onCreate()
         SettingsManager.init(this)
         createNotificationChannel()
-        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        val powerManager = getSystemService(POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AllRecorder::RecordingWakeLock").apply {
             setReferenceCounted(false)
         }
-        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
 
         // Register callback to detect if WE are being silenced by another app
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            audioRecordingCallback = object : AudioManager.AudioRecordingCallback() {
+        audioRecordingCallback = object : AudioManager.AudioRecordingCallback() {
 
-                override fun onRecordingConfigChanged(configs: List<AudioRecordingConfiguration>) {
-                    super.onRecordingConfigChanged(configs)
+            override fun onRecordingConfigChanged(configs: List<AudioRecordingConfiguration>) {
+                super.onRecordingConfigChanged(configs)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     checkIfWeAreSilenced(configs)
                 }
             }
-            audioManager.registerAudioRecordingCallback(audioRecordingCallback!!, null)
         }
+        audioManager.registerAudioRecordingCallback(audioRecordingCallback!!, null)
     }
     @RequiresApi(Build.VERSION_CODES.Q)
     private fun checkIfWeAreSilenced(configs: List<AudioRecordingConfiguration>) {
@@ -155,7 +164,7 @@ class RecordingService : Service() {
         val restartServicePendingIntent = PendingIntent.getService(
             applicationContext, 1, restartServiceIntent, PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
         )
-        val alarmService = applicationContext.getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+        val alarmService = applicationContext.getSystemService(ALARM_SERVICE) as android.app.AlarmManager
         alarmService.set(
             android.app.AlarmManager.ELAPSED_REALTIME,
             android.os.SystemClock.elapsedRealtime() + 1000,
@@ -163,6 +172,7 @@ class RecordingService : Service() {
         )
     }
 
+    @RequiresApi(Build.VERSION_CODES.R)
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
@@ -201,16 +211,13 @@ class RecordingService : Service() {
     private fun startForegroundSafely() {
         try {
             val notification = createNotification(isRecording = true)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
-            } else {
-                startForeground(NOTIFICATION_ID, notification)
-            }
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start foreground", e)
         }
     }
 
+    @SuppressLint("WakelockTimeout")
     private fun startRecording() {
         if (isRecordingInternal) return
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
@@ -253,7 +260,7 @@ class RecordingService : Service() {
                 }
             }
 
-            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.notify(NOTIFICATION_ID, createNotification(isRecording = true))
 
             recordingJob = scope.launch { processAudioLoop() }
@@ -291,20 +298,20 @@ class RecordingService : Service() {
 
         if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) throw IOException("AudioRecord init failed")
     }
-    private fun setSpeakerphoneOn(enable: Boolean) {
+    private fun setSpeakerphoneOn(enable: Boolean = true) {
         if (!isPhoneCallMode) return
 
-        val audioManager = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
 
         try {
             // MODE_IN_CALL required for the routing to apply to the voice call
-            audioManager.mode = android.media.AudioManager.MODE_IN_CALL
+            audioManager.mode = AudioManager.MODE_IN_CALL
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 // Android 12+ (API 31+): Use setCommunicationDevice
                 val devices = audioManager.availableCommunicationDevices
                 if (enable) {
-                    val speaker = devices.find { it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                    val speaker = devices.find { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
                     if (speaker != null) {
                         val result = audioManager.setCommunicationDevice(speaker)
                         Log.i(TAG, "Speakerphone set (Modern API): $result")
@@ -454,7 +461,7 @@ class RecordingService : Service() {
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         } else {
-            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.notify(NOTIFICATION_ID, createNotification(isRecording = false))
         }
     }
@@ -493,7 +500,7 @@ class RecordingService : Service() {
     override fun onDestroy() {
         if (isRecordingInternal) scope.launch { stopRecording(stopService = true) }
         try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch(e:Exception){}
-        if (true && audioRecordingCallback != null) {
+        if (audioRecordingCallback != null) {
             audioManager.unregisterAudioRecordingCallback(audioRecordingCallback!!)
         }
         super.onDestroy()

@@ -144,7 +144,7 @@ fun RecordingsScreen(
                         },
                         onDuplicate = {
                             // Add "duplicate" tag automatically
-                            viewModel.duplicateRecording(context, uiState.recording, "duplicate")
+                            viewModel.duplicateRecording( uiState.recording, "duplicate")
                         },
                         onTrimConfirm = { start, end, copy ->
                             // Add "trimmed" tag automatically
@@ -154,9 +154,9 @@ fun RecordingsScreen(
                         onStopPreview = { viewModel.stopPlayback() },
 
                         onDelete = { viewModel.deleteRecording(context, uiState.recording) },
-                        onTranscribe = { viewModel.transcribeRecording(context, uiState.recording) },
+                        onTranscribe = { viewModel.transcribeRecording( uiState.recording) },
                         onToggleStar = { viewModel.toggleStar(uiState.recording) },
-                        onSaveToDownloads = { viewModel.saveRecordingAs(context, uiState.recording) },
+                        onSaveToDownloads = { viewModel.saveRecordingAs( uiState.recording) },
                         onExpand = { viewModel.loadAmplitudes(uiState.recording) },
                         onToggleSpeed = { viewModel.togglePlaybackSpeed(uiState.recording) },
                         onTagClick = { tag -> viewModel.setTagFilter(tag) },
@@ -216,15 +216,15 @@ fun StarredRecordingsScreen(viewModel: RecordingsViewModel) {
 
                         onUpdateDetails = { name, tags, transcript -> viewModel.updateRecordingDetails(uiState.recording, name, tags, transcript) },
                         onSaveAsNew = { name, tags, transcript -> viewModel.saveAsNewRecording(uiState.recording, name, tags + "saveAs", transcript) },
-                        onDuplicate = { viewModel.duplicateRecording(context, uiState.recording, "duplicate") },
+                        onDuplicate = { viewModel.duplicateRecording( uiState.recording, "duplicate") },
                         onTrimConfirm = { start, end, copy -> viewModel.trimRecording(uiState.recording, start, end, copy, "trimmed") },
                         onPreviewTrim = { start, end -> viewModel.playSegment(uiState.recording, start, end) },
                         onStopPreview = { viewModel.stopPlayback() },
 
                         onDelete = { viewModel.deleteRecording(context, uiState.recording) },
-                        onTranscribe = { viewModel.transcribeRecording(context, uiState.recording) },
+                        onTranscribe = { viewModel.transcribeRecording( uiState.recording) },
                         onToggleStar = { viewModel.toggleStar(uiState.recording) },
-                        onSaveToDownloads = { viewModel.saveRecordingAs(context, uiState.recording) },
+                        onSaveToDownloads = { viewModel.saveRecordingAs( uiState.recording) },
                         onExpand = { viewModel.loadAmplitudes(uiState.recording) },
                         onToggleSpeed = { viewModel.togglePlaybackSpeed(uiState.recording) },
                         onTagClick = { tag -> viewModel.setTagFilter(tag) },

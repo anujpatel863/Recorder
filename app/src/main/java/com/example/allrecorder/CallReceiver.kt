@@ -1,12 +1,9 @@
 package com.example.allrecorder
 
-import android.app.role.RoleManager
 import android.content.BroadcastReceiver
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.provider.CallLog
 import android.telecom.Call
 import android.telecom.CallScreeningService
@@ -129,11 +126,7 @@ class CallReceiver : BroadcastReceiver() {
             putExtra("CALLER_NUMBER", safeNumber)
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.startForegroundService(serviceIntent)
-        } else {
-            context.startService(serviceIntent)
-        }
+        context.startForegroundService(serviceIntent)
     }
 
     private fun stopRecordingService(context: Context) {
