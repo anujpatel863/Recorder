@@ -2,14 +2,15 @@ package com.example.allrecorder.widgets
 
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.SystemClock
 import android.widget.RemoteViews
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
-import androidx.datastore.preferences.core.Preferences
 import androidx.glance.ColorFilter
 import androidx.glance.GlanceId
 import androidx.glance.GlanceModifier
@@ -18,12 +19,15 @@ import androidx.glance.Image
 import androidx.glance.ImageProvider
 import androidx.glance.LocalContext
 import androidx.glance.action.ActionParameters
+import androidx.glance.action.actionStartActivity
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.AndroidRemoteViews
 import androidx.glance.appwidget.GlanceAppWidget
+import androidx.glance.appwidget.GlanceAppWidgetManager
 import androidx.glance.appwidget.GlanceAppWidgetReceiver
 import androidx.glance.appwidget.action.ActionCallback
 import androidx.glance.appwidget.action.actionRunCallback
+import androidx.glance.appwidget.action.actionStartActivity
 import androidx.glance.appwidget.cornerRadius
 import androidx.glance.appwidget.provideContent
 import androidx.glance.appwidget.state.updateAppWidgetState
@@ -33,15 +37,14 @@ import androidx.glance.currentState
 import androidx.glance.layout.Alignment
 import androidx.glance.layout.Box
 import androidx.glance.layout.Row
+import androidx.glance.layout.Spacer
 import androidx.glance.layout.fillMaxSize
 import androidx.glance.layout.padding
 import androidx.glance.layout.size
-import androidx.glance.unit.ColorProvider
+import androidx.glance.layout.width
+import com.example.allrecorder.MainActivity
 import com.example.allrecorder.R
 import com.example.allrecorder.RecordingService
-
-// [FIX] Add this missing import for Arrangement
-import androidx.glance.layout.Spacer
 
 // --- Keys for DataStore ---
 object WidgetKeys {
@@ -66,7 +69,7 @@ class ToggleRecordingAction : ActionCallback {
             context.startService(intent)
         } else {
             val intent = Intent(context, RecordingService::class.java).apply { action = RecordingService.ACTION_START }
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {
                 context.startService(intent)
@@ -75,21 +78,43 @@ class ToggleRecordingAction : ActionCallback {
     }
 }
 
-// --- UI Components ---
+// --- Enhanced Theme & UI Components ---
 
 object AppWidgetTheme {
-    // Background: White in Day, Black in Night
-    val background = ColorProvider(day = Color.White, night = Color.Black)
+    // Idle State: White/Black (Day/Night)
+    val backgroundIdle = ColorProvider(day = Color.White, night = Color(0xFF1C1B1F))
+    val contentIdle = ColorProvider(day = Color.Black, night = Color.White)
 
-    // Content (Icons/Text): Black in Day, White in Night
-    val content = ColorProvider(day = Color.Black, night = Color.White)
+    // Recording State: Red Background (Distinct visibility)
+    val backgroundRecording = ColorProvider(day = Color(0xFFB3261E), night = Color(0xFF601410))
+    val contentRecording = ColorProvider(day = Color.White, night = Color(0xFFF2B8B5))
+}
+
+@Composable
+fun WidgetContainer(
+    isRecording: Boolean,
+    modifier: GlanceModifier = GlanceModifier,
+    content: @Composable () -> Unit
+) {
+    val bg = if (isRecording) AppWidgetTheme.backgroundRecording else AppWidgetTheme.backgroundIdle
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(bg)
+            .cornerRadius(16.dp)
+            .clickable(actionStartActivity<MainActivity>()), // Clicking background opens app
+        contentAlignment = Alignment.Center
+    ) {
+        content()
+    }
 }
 
 @Composable
 fun RecordButton(isRecording: Boolean, modifier: GlanceModifier = GlanceModifier) {
     val iconId = if (isRecording) R.drawable.ic_stop else R.drawable.ic_mic
+    val tint = if (isRecording) AppWidgetTheme.contentRecording else AppWidgetTheme.contentIdle
 
-    // Transparent background for the button itself
     Box(
         modifier = modifier
             .clickable(onClick = actionRunCallback<ToggleRecordingAction>()),
@@ -97,8 +122,8 @@ fun RecordButton(isRecording: Boolean, modifier: GlanceModifier = GlanceModifier
     ) {
         Image(
             provider = ImageProvider(iconId),
-            contentDescription = if (isRecording) "Stop" else "Record",
-            colorFilter = ColorFilter.tint(AppWidgetTheme.content),
+            contentDescription = if (isRecording) "Stop Recording" else "Start Recording",
+            colorFilter = ColorFilter.tint(tint),
             modifier = GlanceModifier.size(32.dp)
         )
     }
@@ -112,13 +137,7 @@ class SimpleRecorderWidget : GlanceAppWidget() {
                 val prefs = currentState<Preferences>()
                 val isRecording = prefs[WidgetKeys.isRecording] ?: false
 
-                Box(
-                    modifier = GlanceModifier
-                        .fillMaxSize()
-                        .background(AppWidgetTheme.background)
-                        .cornerRadius(16.dp),
-                    contentAlignment = Alignment.Center
-                ) {
+                WidgetContainer(isRecording = isRecording) {
                     RecordButton(isRecording = isRecording, modifier = GlanceModifier.fillMaxSize())
                 }
             }
@@ -141,51 +160,45 @@ class TimerRecorderWidget : GlanceAppWidget() {
                     SystemClock.elapsedRealtime()
                 }
 
-                // Manual Dark Mode check for RemoteViews text color
-                val isNightMode = (context.resources.configuration.uiMode and
+                val isNight = (context.resources.configuration.uiMode and
                         android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
                         android.content.res.Configuration.UI_MODE_NIGHT_YES
 
-                val timerTextColor = if (isNightMode) android.graphics.Color.WHITE else android.graphics.Color.BLACK
+                // Logic: If Recording -> White Text (on Red bg). If Idle -> Black/White depending on theme.
+                val timerTextColorInt = if (isRecording) {
+                    if (isNight) 0xFFF2B8B5.toInt() else android.graphics.Color.WHITE
+                } else {
+                    if (isNight) android.graphics.Color.WHITE else android.graphics.Color.BLACK
+                }
 
-                Box(
-                    modifier = GlanceModifier
-                        .fillMaxSize()
-                        .background(AppWidgetTheme.background)
-                        .cornerRadius(16.dp)
-                        .padding(8.dp),
-                    contentAlignment = Alignment.Center
-                ) {
+                WidgetContainer(isRecording = isRecording, modifier = GlanceModifier.padding(8.dp)) {
                     if (!isRecording) {
-                        // IDLE: Single item, centered
+                        // IDLE: Just the button centered
                         RecordButton(isRecording = false, modifier = GlanceModifier.size(48.dp))
                     } else {
-                        // RECORDING: Icon + Timer with equal distribution
-                        // [FIX] Since 'Arrangement' might be tricky in older Glance versions,
-                        // we use Spacer with defaultWeight to push items apart equally.
+                        // RECORDING: Stop Button (Left) + Timer (Right)
+                        // Use a centered Row with specific spacing
                         Row(
-                            modifier = GlanceModifier.fillMaxSize(),
-                            verticalAlignment = Alignment.CenterVertically
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = GlanceModifier.padding(horizontal = 8.dp)
                         ) {
-                            // 1. Left Spacer
-                            Spacer(modifier = GlanceModifier.defaultWeight())
-
-                            // 2. Stop Icon
+                            // 1. Stop Button
                             RecordButton(isRecording = true, modifier = GlanceModifier.size(48.dp))
 
-                            // 3. Middle Spacer
-                            Spacer(modifier = GlanceModifier.defaultWeight())
+                            // 2. Spacer (Gap)
+                            // Increased to 32.dp for better separation
+                            Spacer(modifier = GlanceModifier.width(32.dp))
 
-                            // 4. Timer
-                            AndroidRemoteViews(
-                                remoteViews = RemoteViews(LocalContext.current.packageName, R.layout.widget_chronometer).apply {
-                                    setChronometer(R.id.widget_chronometer, baseTime, null, true)
-                                    setTextColor(R.id.widget_chronometer, timerTextColor)
-                                }
-                            )
-
-                            // 5. Right Spacer
-                            Spacer(modifier = GlanceModifier.defaultWeight())
+                            // 3. Timer
+                            // Wrapped in Box for alignment safety, though Row handles vertical center
+                            Box(contentAlignment = Alignment.Center) {
+                                AndroidRemoteViews(
+                                    remoteViews = RemoteViews(LocalContext.current.packageName, R.layout.widget_chronometer).apply {
+                                        setChronometer(R.id.widget_chronometer, baseTime, null, true)
+                                        setTextColor(R.id.widget_chronometer, timerTextColorInt)
+                                    }
+                                )
+                            }
                         }
                     }
                 }
@@ -197,7 +210,7 @@ class TimerRecorderWidget : GlanceAppWidget() {
 // --- Manager Helper ---
 object WidgetManager {
     suspend fun updateWidgets(context: Context, isRecording: Boolean, startTime: Long) {
-        val manager = androidx.glance.appwidget.GlanceAppWidgetManager(context)
+        val manager = GlanceAppWidgetManager(context)
 
         val simpleIds = manager.getGlanceIds(SimpleRecorderWidget::class.java)
         simpleIds.forEach { glanceId ->
