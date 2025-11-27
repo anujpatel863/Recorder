@@ -5,6 +5,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
@@ -165,44 +166,54 @@ fun PlaybackWaveform(
     amplitudes: List<Int>,
     progress: Float,
     onSeek: (Float) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    barColor: Color = MaterialTheme.colorScheme.primary // [ADDED PARAMETER]
 ) {
-    val playedColor = MaterialTheme.colorScheme.primary
-    val unplayedColor = Color.Gray.copy(alpha = 0.6f)
+    val barWidth = 4f
+    val gap = 2f
 
     Canvas(
         modifier = modifier
-            .fillMaxWidth()
+            .fillMaxSize()
             .pointerInput(Unit) {
-                detectTapGestures { offset -> onSeek((offset.x / size.width).coerceIn(0f, 1f)) }
-            }
-            .pointerInput(Unit) {
-                detectHorizontalDragGestures { change, _ ->
-                    change.consume()
-                    onSeek((change.position.x / size.width).coerceIn(0f, 1f))
+                detectTapGestures { offset ->
+                    val totalBars = amplitudes.size
+                    val totalWidth = totalBars * (barWidth + gap)
+                    // If the click is within the waveform width
+                    if (totalWidth > 0) {
+                        val seekPercent = (offset.x / size.width).coerceIn(0f, 1f)
+                        onSeek(seekPercent)
+                    }
                 }
             }
     ) {
-        if (amplitudes.isEmpty()) return@Canvas
+        val canvasWidth = size.width
+        val canvasHeight = size.height
+        val totalBars = amplitudes.size
 
-        val barCount = amplitudes.size
-        val width = size.width
-        val height = size.height
-        val centerY = height / 2f
-        val barWidth = width / barCount
-        val gap = barWidth * 0.3f
-        val actualBarWidth = (barWidth - gap).coerceAtLeast(1f)
+        // Avoid division by zero
+        if (totalBars == 0) return@Canvas
 
-        amplitudes.forEachIndexed { index, amp ->
-            val normalizedAmp = (amp / 100f).coerceIn(0.05f, 1f)
-            val barHeight = normalizedAmp * (height * 0.9f)
-            val xOffset = index * barWidth
-            val isPlayed = (index.toFloat() / barCount) <= progress
+        // Dynamic calculation to fit bars in width
+        val totalSpace = canvasWidth
+        val effectiveBarWidth = totalSpace / totalBars
+        val spacing = effectiveBarWidth * 0.2f
+        val drawBarWidth = effectiveBarWidth - spacing
+
+        amplitudes.forEachIndexed { index, amplitude ->
+            val percent = amplitude / 100f
+            val barHeight = canvasHeight * percent
+            val x = index * effectiveBarWidth
+            val y = (canvasHeight - barHeight) / 2
+
+            // Determine color based on progress
+            val isPlayed = (index.toFloat() / totalBars) <= progress
+            val color = if (isPlayed) barColor else barColor.copy(alpha = 0.5f)
 
             drawRoundRect(
-                color = if (isPlayed) playedColor else unplayedColor,
-                topLeft = Offset(xOffset, centerY - (barHeight / 2)),
-                size = Size(actualBarWidth, barHeight),
+                color = color,
+                topLeft = Offset(x, y),
+                size = Size(drawBarWidth, barHeight),
                 cornerRadius = CornerRadius(4f, 4f)
             )
         }

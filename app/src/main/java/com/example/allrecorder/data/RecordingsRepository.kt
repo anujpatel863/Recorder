@@ -36,7 +36,253 @@ class RecordingsRepository @Inject constructor(
 
     fun getStarredRecordings(): Flow<List<Recording>> = recordingDao.getStarredRecordings()
 
-    // [NEW] Generic Update for Tags (and other fields)
+    // [NEW] Smart "Duplicate" with optional Tag
+    suspend fun duplicateRecording(recording: Recording, tagToAdd: String? = null) = withContext(Dispatchers.IO) {
+        val originalFile = File(recording.filePath)
+        if (!originalFile.exists()) {
+            withContext(Dispatchers.Main) {
+                Toast.makeText(context, "Original file not found.", Toast.LENGTH_SHORT).show()
+            }
+            return@withContext
+        }
+
+        // Smart Naming: Handle duplicates like "Name (Copy)", "Name (Copy 2)"
+        val parent = originalFile.parentFile
+        val name = originalFile.nameWithoutExtension
+        val ext = originalFile.extension
+
+        var copyName = "$name (Copy)"
+        var copyFile = File(parent, "$copyName.$ext")
+        var counter = 1
+
+        while (copyFile.exists()) {
+            counter++
+            copyName = "$name (Copy $counter)"
+            copyFile = File(parent, "$copyName.$ext")
+        }
+
+        try {
+            originalFile.copyTo(copyFile)
+
+            // Calculate new tags
+            val newTags = if (tagToAdd != null && !recording.tags.contains(tagToAdd)) {
+                recording.tags + tagToAdd
+            } else {
+                recording.tags
+            }
+
+            // Create new entry
+            val newRecording = recording.copy(
+                id = 0, // Auto-generate
+                filePath = copyFile.absolutePath,
+                startTime = System.currentTimeMillis(), // Bring to top
+                tags = newTags,
+                isStarred = false // Don't auto-star duplicates
+            )
+            recordingDao.insert(newRecording)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            withContext(Dispatchers.Main) {
+                Toast.makeText(context, "Failed to duplicate file.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    // [NEW] Smart "Save As New" (Copy with specific details)
+    suspend fun saveAsNewRecording(
+        originalRecording: Recording,
+        newName: String,
+        newTags: List<String>,
+        newTranscript: String
+    ) = withContext(Dispatchers.IO) {
+        val originalFile = File(originalRecording.filePath)
+        if (!originalFile.exists()) {
+            withContext(Dispatchers.Main) {
+                Toast.makeText(context, "Original file not found.", Toast.LENGTH_SHORT).show()
+            }
+            return@withContext
+        }
+
+        // 1. Determine unique file name
+        val parent = originalFile.parentFile
+        val extension = originalFile.extension
+        var safeName = newName
+        var destFile = File(parent, "$safeName.$extension")
+        var counter = 1
+
+        while (destFile.exists()) {
+            safeName = "$newName ($counter)"
+            destFile = File(parent, "$safeName.$extension")
+            counter++
+        }
+
+        try {
+            // 2. Physical Copy
+            originalFile.copyTo(destFile)
+
+            // 3. Generate Embedding if transcript changed
+            val finalEmbedding = if (newTranscript != originalRecording.transcript) {
+                if (SettingsManager.semanticSearchEnabled && newTranscript.isNotBlank()) {
+                    embeddingManager.generateEmbedding(newTranscript)
+                } else null
+            } else {
+                originalRecording.embedding
+            }
+
+            // 4. Insert into DB
+            val newRecording = originalRecording.copy(
+                id = 0,
+                filePath = destFile.absolutePath,
+                startTime = System.currentTimeMillis(),
+                tags = newTags,
+                transcript = if (newTranscript.isBlank()) null else newTranscript,
+                embedding = finalEmbedding,
+                isStarred = false,
+                processingStatus = if (newTranscript.isNotBlank()) Recording.STATUS_COMPLETED else originalRecording.processingStatus
+            )
+            recordingDao.insert(newRecording)
+
+        } catch (e: Exception) {
+            e.printStackTrace()
+            withContext(Dispatchers.Main) {
+                Toast.makeText(context, "Failed to create copy.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    // [NEW] Smart "Update" (Rename + Tag + Transcript)
+    suspend fun updateRecordingDetails(
+        recording: Recording,
+        newName: String,
+        newTags: List<String>,
+        newTranscript: String
+    ) = withContext(Dispatchers.IO) {
+        var currentRecording = recording
+        val originalFile = File(recording.filePath)
+
+        // 1. Handle Rename if needed
+        if (originalFile.exists() && originalFile.nameWithoutExtension != newName) {
+            val parent = originalFile.parentFile
+            val extension = originalFile.extension
+            val newFile = File(parent, "$newName.$extension")
+
+            if (!newFile.exists() && originalFile.renameTo(newFile)) {
+                currentRecording = currentRecording.copy(filePath = newFile.absolutePath)
+            }
+        }
+
+        // 2. Handle Transcript & Embedding
+        var updatedEmbedding = currentRecording.embedding
+        if (newTranscript != currentRecording.transcript) {
+            updatedEmbedding = if (SettingsManager.semanticSearchEnabled && newTranscript.isNotBlank()) {
+                embeddingManager.generateEmbedding(newTranscript)
+            } else null
+        }
+
+        // 3. Update DB
+        val updated = currentRecording.copy(
+            tags = newTags,
+            transcript = if (newTranscript.isBlank()) null else newTranscript,
+            embedding = updatedEmbedding,
+            processingStatus = if (newTranscript.isNotBlank()) Recording.STATUS_COMPLETED else currentRecording.processingStatus
+        )
+
+        recordingDao.update(updated)
+    }
+
+    // [NEW] Trim Recording Logic
+    suspend fun trimRecording(
+        originalRecording: Recording,
+        startMs: Long,
+        endMs: Long,
+        saveAsNew: Boolean,
+        tagToAdd: String? = null
+    ) = withContext(Dispatchers.IO) {
+        val originalFile = File(originalRecording.filePath)
+        if (!originalFile.exists()) return@withContext
+
+        // Prepare Output File
+        val parent = originalFile.parentFile
+        val extension = originalFile.extension
+        val name = originalFile.nameWithoutExtension
+
+        val destFile = if (saveAsNew) {
+            var copyName = "$name-Trimmed"
+            var f = File(parent, "$copyName.$extension")
+            var c = 1
+            while (f.exists()) {
+                copyName = "$name-Trimmed $c"
+                f = File(parent, "$copyName.$extension")
+                c++
+            }
+            f
+        } else {
+            // For overwrite, we write to a temp file first
+            File(parent, "temp_trim.$extension")
+        }
+
+        // Perform Trim
+        val success = AudioUtils.trimAudioFile(originalFile, destFile, startMs, endMs)
+
+        if (success) {
+            val newDuration = endMs - startMs
+
+            // Calculate tags
+            val updatedTags = if (tagToAdd != null && !originalRecording.tags.contains(tagToAdd)) {
+                originalRecording.tags + tagToAdd
+            } else {
+                originalRecording.tags
+            }
+
+            if (saveAsNew) {
+                // Insert New
+                val newRec = originalRecording.copy(
+                    id = 0,
+                    filePath = destFile.absolutePath,
+                    startTime = System.currentTimeMillis(),
+                    duration = newDuration,
+                    transcript = null, // Transcript invalid after trim
+                    embedding = null,
+                    processingStatus = Recording.STATUS_NOT_STARTED,
+                    isStarred = false,
+                    tags = updatedTags
+                )
+                recordingDao.insert(newRec)
+            } else {
+                // Overwrite Logic
+                if (destFile.renameTo(originalFile)) {
+                    // Update Existing
+                    val updated = originalRecording.copy(
+                        duration = newDuration,
+                        transcript = null,
+                        embedding = null,
+                        processingStatus = Recording.STATUS_NOT_STARTED,
+                        tags = updatedTags
+                    )
+                    recordingDao.update(updated)
+                } else {
+                    // Fallback swap if rename fails
+                    destFile.copyTo(originalFile, overwrite = true)
+                    destFile.delete()
+                    val updated = originalRecording.copy(
+                        duration = newDuration,
+                        transcript = null,
+                        embedding = null,
+                        processingStatus = Recording.STATUS_NOT_STARTED,
+                        tags = updatedTags
+                    )
+                    recordingDao.update(updated)
+                }
+            }
+        } else {
+            withContext(Dispatchers.Main) {
+                Toast.makeText(context, "Trim failed.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    // --- Standard Methods ---
+
     suspend fun updateRecording(recording: Recording) = withContext(Dispatchers.IO) {
         recordingDao.update(recording)
     }
@@ -57,7 +303,7 @@ class RecordingsRepository @Inject constructor(
 
     suspend fun renameRecording(recording: Recording, newName: String) = withContext(Dispatchers.IO) {
         val oldFile = File(recording.filePath)
-        val newFile = File(oldFile.parent, "$newName.wav") // Assuming .wav for now - ideally preserve extension
+        val newFile = File(oldFile.parent, "$newName.wav")
         if (oldFile.renameTo(newFile)) {
             val renamedRecording = recording.copy(filePath = newFile.absolutePath)
             recordingDao.update(renamedRecording)
@@ -87,7 +333,6 @@ class RecordingsRepository @Inject constructor(
                 }
                 return@withContext
             }
-            // Preserve original extension
             val extension = srcFile.extension
             val fileName = "Saved_${srcFile.nameWithoutExtension}.$extension"
             val mimeType = if (extension.equals("m4a", true)) "audio/mp4" else "audio/wav"
@@ -95,10 +340,8 @@ class RecordingsRepository @Inject constructor(
             val contentValues = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
                 put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/AllRecorder")
-                    put(MediaStore.MediaColumns.IS_PENDING, 1)
-                }
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/AllRecorder")
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
             val resolver = context.contentResolver
             val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
@@ -108,11 +351,9 @@ class RecordingsRepository @Inject constructor(
                         inputStream.copyTo(outputStream!!)
                     }
                 }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    contentValues.clear()
-                    contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
-                    resolver.update(uri, contentValues, null, null)
-                }
+                contentValues.clear()
+                contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                resolver.update(uri, contentValues, null, null)
                 withContext(Dispatchers.Main) {
                     Toast.makeText(context, "Saved to Downloads/AllRecorder", Toast.LENGTH_LONG).show()
                 }
@@ -164,7 +405,6 @@ class RecordingsRepository @Inject constructor(
 
             onProgress(0.9f, "Indexing...")
 
-            // [UPDATED] Respect Semantic Search Setting
             val vector = if (SettingsManager.semanticSearchEnabled) {
                 embeddingManager.generateEmbedding(fullTranscript)
             } else {
@@ -188,9 +428,6 @@ class RecordingsRepository @Inject constructor(
     }
 
     suspend fun performSemanticSearch(query: String): List<Recording> {
-        // [UPDATED] Hybrid Search Logic
-
-        // 1. If Semantic Search is DISABLED, fallback to simple text search.
         if (!SettingsManager.semanticSearchEnabled) {
             val allRecs = recordingDao.getAllRecordingsForSearch()
             return allRecs.filter { rec ->
@@ -199,7 +436,6 @@ class RecordingsRepository @Inject constructor(
             }
         }
 
-        // 2. If Semantic Search is ENABLED, perform vector search.
         val queryVector = embeddingManager.generateEmbedding(query) ?: return emptyList()
         val allRecs = recordingDao.getAllRecordingsForSearch()
 
@@ -213,7 +449,6 @@ class RecordingsRepository @Inject constructor(
             .map { it.first }
     }
 
-    // [NEW] Backfill Logic
     suspend fun getMissingEmbeddingsCount(): Int {
         return recordingDao.getRecordingsMissingEmbeddings().size
     }
@@ -223,7 +458,6 @@ class RecordingsRepository @Inject constructor(
         val total = missing.size
 
         missing.forEachIndexed { index, rec ->
-            // Double check transcript exists
             val text = rec.transcript
             if (!text.isNullOrBlank()) {
                 val vector = embeddingManager.generateEmbedding(text)
@@ -241,25 +475,18 @@ class RecordingsRepository @Inject constructor(
     }
 
     suspend fun cleanUpOldRecordings(daysToKeep: Int, protectedTag: String): Int = withContext(Dispatchers.IO) {
-        // Calculate the cutoff time (Current Time - Days in Millis)
         val cutoffTime = System.currentTimeMillis() - (daysToKeep * 24 * 60 * 60 * 1000L)
-
-        // 1. Get candidates from DB (Old & Not Starred)
         val candidates = recordingDao.getOldNonStarredRecordings(cutoffTime)
 
         var deletedCount = 0
 
         candidates.forEach { recording ->
-            // 2. Secondary check: Do NOT delete if it has the protected tag
             val hasProtectedTag = recording.tags.contains(protectedTag)
-
             if (!hasProtectedTag) {
-                // Safe to delete
                 deleteRecording(recording)
                 deletedCount++
             }
         }
-
         return@withContext deletedCount
     }
 }

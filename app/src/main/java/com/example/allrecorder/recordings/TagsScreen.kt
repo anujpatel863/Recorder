@@ -3,14 +3,12 @@ package com.example.allrecorder.recordings
 import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.annotation.RequiresApi
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Label
-import androidx.compose.material.icons.filled.Label
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -100,12 +98,8 @@ fun TagsScreen(viewModel: RecordingsViewModel) {
                     contentPadding = PaddingValues(bottom = 80.dp, top = 8.dp, start = 8.dp, end = 8.dp)
                 ) {
                     items(taggedRecordings, key = { it.recording.id }) { uiState ->
-                        // Reuse the exact same item from RecordingsScreen
-                        // We need to duplicate the callbacks here or refactor RecordingItem to be public (it is)
-                        // Note: To avoid duplication in a real app, RecordingItem should be in a shared file.
-                        // Assuming RecordingItem is available in this package (it is in RecordingsScreen.kt):
 
-                        // Copying the item usage from RecordingsScreen.kt:
+                        // [UPDATED] Matches RecordingsScreen with Auto-Tags & Trim Support
                         RecordingItem(
                             uiState = uiState,
                             playerState = playerState,
@@ -113,19 +107,37 @@ fun TagsScreen(viewModel: RecordingsViewModel) {
                             onRewind = viewModel::onRewind,
                             onForward = viewModel::onForward,
                             onSeek = { p -> viewModel.onSeek(uiState.recording, p) },
-                            onRename = { viewModel.renameRecording(context, uiState.recording) },
+
+                            // Smart Actions
+                            onUpdateDetails = { name, tags, transcript ->
+                                viewModel.updateRecordingDetails(uiState.recording, name, tags, transcript)
+                            },
+                            onSaveAsNew = { name, tags, transcript ->
+                                // Add "saveAs" tag
+                                viewModel.saveAsNewRecording(uiState.recording, name, tags + "saveAs", transcript)
+                            },
+                            onDuplicate = {
+                                // Add "duplicate" tag
+                                viewModel.duplicateRecording(context, uiState.recording, "duplicate")
+                            },
+                            onTrimConfirm = { start, end, copy ->
+                                // Add "trimmed" tag
+                                viewModel.trimRecording(uiState.recording, start, end, copy, "trimmed")
+                            },
+                            onPreviewTrim = { start, end -> viewModel.playSegment(uiState.recording, start, end) },
+                            onStopPreview = { viewModel.stopPlayback() },
+
                             onDelete = { viewModel.deleteRecording(context, uiState.recording) },
                             onTranscribe = { viewModel.transcribeRecording(context, uiState.recording) },
                             onToggleStar = { viewModel.toggleStar(uiState.recording) },
-                            onSaveAs = { viewModel.saveRecordingAs(context, uiState.recording) },
+                            onSaveToDownloads = { viewModel.saveRecordingAs(context, uiState.recording) },
                             onExpand = { viewModel.loadAmplitudes(uiState.recording) },
                             onToggleSpeed = { viewModel.togglePlaybackSpeed(uiState.recording) },
-                            onAddTag = { tag -> viewModel.addTag(uiState.recording, tag) },
-                            onRemoveTag = { tag -> viewModel.removeTag(uiState.recording, tag) },
-                            onTagClick = { tag -> selectedTag = tag },
-                            onUpdateTranscript = { txt -> viewModel.updateTranscript(uiState.recording, txt) },
-                            onExport = { fmt -> viewModel.exportTranscript(context, uiState.recording, fmt) }
 
+                            // Tag navigation within Tag Screen just switches the view
+                            onTagClick = { tag -> selectedTag = tag },
+                            onRemoveTag = { tag -> viewModel.removeTag(uiState.recording, tag) },
+                            onExport = { fmt -> viewModel.exportTranscript(context, uiState.recording, fmt) }
                         )
                     }
                 }

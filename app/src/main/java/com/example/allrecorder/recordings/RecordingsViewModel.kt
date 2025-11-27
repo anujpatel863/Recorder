@@ -1,6 +1,7 @@
 package com.example.allrecorder.recordings
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Application
 import android.content.ComponentName
 import android.content.Context
@@ -41,6 +42,7 @@ class RecordingsViewModel @Inject constructor(
     var isServiceRecording by mutableStateOf(RecordingService.isRecording)
         private set
 
+    @SuppressLint("StaticFieldLeak")
     private var recordingService: RecordingService? = null
     private var isBound by mutableStateOf(false)
 
@@ -235,16 +237,7 @@ class RecordingsViewModel @Inject constructor(
         }
     }
 
-    fun renameRecording(context: Context, recording: Recording) {
-        stopPlayback()
-        val editText = EditText(context).apply { setText(File(recording.filePath).nameWithoutExtension) }
-        AlertDialog.Builder(context).setTitle("Rename").setView(editText).setPositiveButton("Rename") { _, _ ->
-            val newName = editText.text.toString().trim()
-            if (newName.isNotEmpty()) {
-                viewModelScope.launch { repository.renameRecording(recording, newName) }
-            }
-        }.setNegativeButton("Cancel", null).show()
-    }
+
 
     fun deleteRecording(context: Context, recording: Recording) {
         AlertDialog.Builder(context).setTitle("Delete").setMessage("Confirm delete?").setPositiveButton("Delete") { _, _ ->
@@ -428,6 +421,78 @@ class RecordingsViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             TranscriptExporter.export(context, recording, format)
         }
+    }
+    fun duplicateRecording(context: Context, recording: Recording, tagToAdd: String? = null) {
+        viewModelScope.launch {
+            repository.duplicateRecording(recording, tagToAdd)
+        }
+    }
+    fun saveAsNewRecording(
+        originalRecording: Recording,
+        newName: String,
+        newTags: List<String>,
+        newTranscript: String
+    ) {
+        viewModelScope.launch {
+            repository.saveAsNewRecording(originalRecording, newName, newTags, newTranscript)
+            // Optional: You could show a Snackbar here saying "Saved as copy"
+        }
+    }
+
+    // consolidated update for the new Edit Dialog
+    fun updateRecordingDetails(
+        recording: Recording,
+        newName: String,
+        newTags: List<String>,
+        newTranscript: String
+    ) {
+        viewModelScope.launch {
+            repository.updateRecordingDetails(recording, newName, newTags, newTranscript)
+        }
+    }
+    fun trimRecording(recording: Recording, startMs: Long, endMs: Long, saveAsNew: Boolean, tagToAdd: String? = null) {
+        viewModelScope.launch {
+            repository.trimRecording(recording, startMs, endMs, saveAsNew, tagToAdd)
+        }
+    }
+
+    // Helper for the Trim Dialog to play just the segment
+    fun playSegment(recording: Recording, startMs: Long, endMs: Long) {
+        stopPlayback()
+        mediaPlayer = MediaPlayer().apply {
+            try {
+                setDataSource(recording.filePath)
+                prepare()
+                seekTo(startMs.toInt())
+
+                // Set end point listener
+                // Note: Precise end loop requires a Runnable loop in UI or simple delayed check
+                // We'll just start it here and let the UI state manage the "stop at endMs"
+            } catch (e: Exception) { return }
+        }
+
+        _playerState.update {
+            it.copy(
+                playingRecordingId = recording.id,
+                isPlaying = true,
+                currentPosition = startMs.toInt(),
+                maxDuration = recording.duration.toInt()
+            )
+        }
+        mediaPlayer?.start()
+
+        // Launch a job to stop at endMs
+        viewModelScope.launch {
+            while (isActive && mediaPlayer?.isPlaying == true) {
+                if ((mediaPlayer?.currentPosition ?: 0) >= endMs) {
+                    pausePlayback()
+                    mediaPlayer?.seekTo(startMs.toInt()) // Reset to start of trim
+                    break
+                }
+                delay(50)
+            }
+        }
+        startUpdatingProgress()
     }
 
     fun bindService(context: Context) { Intent(context, RecordingService::class.java).also { intent -> context.bindService(intent, connection, Context.BIND_AUTO_CREATE) } }
