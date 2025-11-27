@@ -196,6 +196,7 @@ class RecordingService : Service() {
         }
     }
 
+    @RequiresApi(Build.VERSION_CODES.R)
     private fun startForegroundSafely() {
         try {
             val notification = createNotification(isRecording = true)

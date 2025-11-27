@@ -120,4 +120,17 @@ object SettingsManager {
     var callRecordingEnabled: Boolean
         get() = prefs.getBoolean("call_recording_enabled", true) // Default is TRUE
         set(value) = prefs.edit().putBoolean("call_recording_enabled", value).apply()
+    var autoDeleteEnabled: Boolean
+        get() = prefs.getBoolean("auto_delete_enabled", false)
+        set(value) = prefs.edit().putBoolean("auto_delete_enabled", value).apply()
+
+    // Number of days to keep recordings (e.g., 2 or 7)
+    var retentionDays: Int
+        get() = prefs.getInt("retention_days", 7)
+        set(value) = prefs.edit().putInt("retention_days", value).apply()
+
+    // Files with this tag will NOT be deleted (e.g., "keep")
+    var protectedTag: String
+        get() = prefs.getString("protected_tag", "keep") ?: "keep"
+        set(value) = prefs.edit().putString("protected_tag", value).apply()
 }

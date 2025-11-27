@@ -38,4 +38,7 @@ interface RecordingDao {
     suspend fun getAllRecordingsForSearch(): List<Recording>
     @Query("SELECT * FROM recordings WHERE embedding IS NULL AND transcript IS NOT NULL AND LENGTH(transcript) > 0")
     suspend fun getRecordingsMissingEmbeddings(): List<Recording>
+
+    @Query("SELECT * FROM recordings WHERE startTime < :cutoffTimestamp AND isStarred = 0")
+    suspend fun getOldNonStarredRecordings(cutoffTimestamp: Long): List<Recording>
 }

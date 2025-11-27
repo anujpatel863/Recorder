@@ -239,4 +239,27 @@ class RecordingsRepository @Inject constructor(
         val updated = recording.copy(transcript = newText)
         recordingDao.update(updated)
     }
+
+    suspend fun cleanUpOldRecordings(daysToKeep: Int, protectedTag: String): Int = withContext(Dispatchers.IO) {
+        // Calculate the cutoff time (Current Time - Days in Millis)
+        val cutoffTime = System.currentTimeMillis() - (daysToKeep * 24 * 60 * 60 * 1000L)
+
+        // 1. Get candidates from DB (Old & Not Starred)
+        val candidates = recordingDao.getOldNonStarredRecordings(cutoffTime)
+
+        var deletedCount = 0
+
+        candidates.forEach { recording ->
+            // 2. Secondary check: Do NOT delete if it has the protected tag
+            val hasProtectedTag = recording.tags.contains(protectedTag)
+
+            if (!hasProtectedTag) {
+                // Safe to delete
+                deleteRecording(recording)
+                deletedCount++
+            }
+        }
+
+        return@withContext deletedCount
+    }
 }

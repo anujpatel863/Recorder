@@ -326,11 +326,16 @@ class MainActivity : ComponentActivity() {
         // Picker Dialog States
         var showPrimaryColorPicker by remember { mutableStateOf(false) }
         var showSecondaryColorPicker by remember { mutableStateOf(false) }
+        var showRetentionDialog by remember { mutableStateOf(false) }
+        var showProtectedTagDialog by remember { mutableStateOf(false) }
 
         // Observe settings live
         val currentPrimaryColor by SettingsManager.visualizerColorFlow.collectAsState()
         val currentSecondaryColor by SettingsManager.visualizerColorSecondaryFlow.collectAsState()
         val currentGradientState by SettingsManager.visualizerGradientFlow.collectAsState()
+        var autoDeleteEnabled by remember { mutableStateOf(SettingsManager.autoDeleteEnabled) }
+        var retentionDays by remember { mutableStateOf(SettingsManager.retentionDays) }
+        var protectedTag by remember { mutableStateOf(SettingsManager.protectedTag) }
 
         val context = LocalContext.current
         val modelViewModel: ModelManagementViewModel = hiltViewModel()
@@ -364,6 +369,43 @@ class MainActivity : ComponentActivity() {
                     }
                 )
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                Text("Automatic Cleanup", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
+
+                NavigationDrawerItem(
+                    label = { Text("Enable Auto-Delete") },
+                    badge = {
+                        Switch(
+                            checked = autoDeleteEnabled,
+                            onCheckedChange = {
+                                autoDeleteEnabled = it
+                                SettingsManager.autoDeleteEnabled = it
+                            }
+                        )
+                    },
+                    selected = false,
+                    onClick = { }
+                )
+
+                if (autoDeleteEnabled) {
+                    NavigationDrawerItem(
+                        label = { Text("Retention Period") },
+                        badge = { Text("$retentionDays Days", style = MaterialTheme.typography.labelSmall) },
+                        selected = false,
+                        onClick = { showRetentionDialog = true }
+                    )
+
+                    NavigationDrawerItem(
+                        label = { Column {
+                            Text("Protected Tag")
+                            Text("Files with this tag won't be deleted", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                        }},
+                        badge = { Text("#$protectedTag", style = MaterialTheme.typography.labelSmall) },
+                        selected = false,
+                        onClick = { showProtectedTagDialog = true }
+                    )
+                }
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                
 
                 // --- VISUALIZER STYLE SECTION ---
                 Text("Visualizer Style", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
@@ -503,6 +545,29 @@ class MainActivity : ComponentActivity() {
         }
 
         // --- Dialogs ---
+        if (showRetentionDialog) {
+            RetentionPeriodDialog(
+                currentDays = retentionDays,
+                onDismiss = { showRetentionDialog = false },
+                onConfirm = { days ->
+                    retentionDays = days
+                    SettingsManager.retentionDays = days
+                    showRetentionDialog = false
+                }
+            )
+        }
+
+        if (showProtectedTagDialog) {
+            ProtectedTagDialog(
+                currentTag = protectedTag,
+                onDismiss = { showProtectedTagDialog = false },
+                onConfirm = { tag ->
+                    protectedTag = tag
+                    SettingsManager.protectedTag = tag
+                    showProtectedTagDialog = false
+                }
+            )
+        }
 
         if (showPrimaryColorPicker) {
             ColorPickerDialog(
@@ -550,6 +615,62 @@ class MainActivity : ComponentActivity() {
     }
 
     // ... (Keep existing helpers: ModelDependentSwitch, AsrModelSelectionDialog, ListPreferenceDialog, etc.) ...
+    @Composable
+    fun RetentionPeriodDialog(currentDays: Int, onDismiss: () -> Unit, onConfirm: (Int) -> Unit) {
+        val options = listOf(2, 3, 7, 14, 30, 60)
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text("Retention Period") },
+            text = {
+                Column {
+                    options.forEach { days ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onConfirm(days) }
+                                .padding(vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = (days == currentDays),
+                                onClick = { onConfirm(days) }
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(text = "$days Days")
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+        )
+    }
+
+    @Composable
+    fun ProtectedTagDialog(currentTag: String, onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
+        var text by remember { mutableStateOf(currentTag) }
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text("Set Protected Tag") },
+            text = {
+                Column {
+                    Text("Recordings with this tag will never be auto-deleted.", style = MaterialTheme.typography.bodySmall)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = text,
+                        onValueChange = { text = it },
+                        label = { Text("Tag Name") },
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = { if (text.isNotBlank()) onConfirm(text) }) {
+                    Text("Save")
+                }
+            },
+            dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+        )
+    }
 
     @Composable
     private fun ModelDependentSwitch(isChecked: Boolean, state: com.example.allrecorder.ui.components.BundleUiState, onCheckedChange: (Boolean) -> Unit) {
