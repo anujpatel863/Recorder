@@ -40,24 +40,26 @@ class RecordingsRepository @Inject constructor(
         val projection = arrayOf(
             MediaStore.Audio.Media._ID,
             MediaStore.Audio.Media.DISPLAY_NAME,
-            MediaStore.Audio.Media.DATA, // Path
+            MediaStore.Audio.Media.DATA,
             MediaStore.Audio.Media.DURATION,
             MediaStore.Audio.Media.DATE_ADDED
         )
-
         val sortOrder = "${MediaStore.Audio.Media.DATE_ADDED} DESC"
 
-        // Scan external storage for audio
         val cursor = context.contentResolver.query(
             MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
-            projection,
-            null,
-            null,
-            sortOrder
+            projection, null, null, sortOrder
         )
 
         var count = 0
         val existingPaths = recordingDao.getAllPaths().toHashSet()
+
+        // [LOGIC] Calculate Retention Cutoff
+        // If Auto-Delete is ON, we calculate the timestamp for X days ago.
+        // Any file older than this timestamp will be SKIPPED.
+        val autoDelete = SettingsManager.autoDeleteEnabled
+        val retentionDays = SettingsManager.retentionDays
+        val cutoffTime = if (autoDelete) System.currentTimeMillis() - (retentionDays * 24 * 60 * 60 * 1000L) else 0L
 
         cursor?.use {
             val pathCol = it.getColumnIndexOrThrow(MediaStore.Audio.Media.DATA)
@@ -72,8 +74,7 @@ class RecordingsRepository @Inject constructor(
                     val lowerName = name.lowercase()
                     val lowerPath = path.lowercase()
 
-                    // [LOGIC] Detection for Call Recordings
-                    // We look for keywords often used by Android system call recorders or other apps
+                    // Identify Call Recordings
                     val isCallRecording = lowerName.contains("call") ||
                             lowerName.contains("rec") ||
                             lowerPath.contains("call recordings") ||
@@ -81,18 +82,19 @@ class RecordingsRepository @Inject constructor(
 
                     if (isCallRecording) {
                         val duration = it.getLong(durCol)
-                        // MediaStore date is in seconds, convert to millis
                         val dateAdded = it.getLong(dateCol) * 1000L
-
-                        // Use valid time or fallback to now
                         val finalTime = if (dateAdded > 0) dateAdded else System.currentTimeMillis()
+
+                        // [CRITICAL CHECK] Skip if older than retention period
+                        if (autoDelete && finalTime < cutoffTime) {
+                            continue
+                        }
 
                         val rec = Recording(
                             filePath = path,
                             startTime = finalTime,
                             duration = duration,
                             processingStatus = Recording.STATUS_NOT_STARTED,
-                            // [TAGGING] Auto-tag as 'call' and 'imported'
                             tags = listOf("call", "imported")
                         )
                         recordingDao.insert(rec)
@@ -101,12 +103,10 @@ class RecordingsRepository @Inject constructor(
                 }
             }
         }
-        withContext(Dispatchers.Main) {
-            onFound(count)
-        }
+        withContext(Dispatchers.Main) { onFound(count) }
     }
 
-    // ... (Keep the rest of the file unchanged: duplicateRecording, saveAs, etc.) ...
+
 
     suspend fun duplicateRecording(recording: Recording, tagToAdd: String? = null) = withContext(Dispatchers.IO) {
         val originalFile = File(recording.filePath)
@@ -189,7 +189,7 @@ class RecordingsRepository @Inject constructor(
     }
 
     suspend fun updateRecording(recording: Recording) = withContext(Dispatchers.IO) { recordingDao.update(recording) }
-    suspend fun loadAmplitudes(recording: Recording): List<Int> = withContext(Dispatchers.IO) { try { val file = File(recording.filePath); if (file.exists()) AudioUtils.extractAmplitudes(file) else emptyList() } catch (e: Exception) { emptyList() } }
+    suspend fun loadAmplitudes(recording: Recording): List<Int> = withContext(Dispatchers.IO) { try { val file = File(recording.filePath); if (file.exists()) AudioUtils.extractAmplitudes(file) else emptyList() } catch (_: Exception) { emptyList() } }
     suspend fun deleteRecording(recording: Recording) = withContext(Dispatchers.IO) { val file = File(recording.filePath); if (file.exists()) { file.delete() }; recordingDao.delete(recording) }
     suspend fun toggleStar(recording: Recording) = withContext(Dispatchers.IO) { val updatedRecording = recording.copy(isStarred = !recording.isStarred); recordingDao.update(updatedRecording) }
 

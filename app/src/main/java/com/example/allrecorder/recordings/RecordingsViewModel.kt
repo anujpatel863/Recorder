@@ -191,17 +191,19 @@ class RecordingsViewModel @Inject constructor(
     }
     fun syncCallRecordings(context: Context) {
         viewModelScope.launch {
-            try {
-                repository.importExternalRecordings { count ->
-                    // Optional: Notify only if new ones found or generic success
-                    if (count > 0) {
-                        viewModelScope.launch(Dispatchers.Main) {
-                            Toast.makeText(context, "Found $count new recordings.", Toast.LENGTH_SHORT).show()
-                        }
-                    }
+            // 1. Import (Filters out old files automatically)
+            repository.importExternalRecordings { count ->
+                viewModelScope.launch(Dispatchers.Main) {
+                    if (count > 0) Toast.makeText(context, "Found $count new recordings.", Toast.LENGTH_SHORT).show()
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
+            }
+
+            // 2. Cleanup (Removes ALREADY imported files that are now too old)
+            if (SettingsManager.autoDeleteEnabled) {
+                repository.cleanUpOldRecordings(
+                    SettingsManager.retentionDays,
+                    SettingsManager.protectedTag
+                )
             }
         }
     }
