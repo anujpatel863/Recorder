@@ -132,7 +132,7 @@ fun TagsScreen(viewModel: RecordingsViewModel) {
                             onToggleStar = { viewModel.toggleStar(uiState.recording) },
                             onSaveToDownloads = { viewModel.saveRecordingAs( uiState.recording) },
                             onExpand = { viewModel.loadAmplitudes(uiState.recording) },
-                            onToggleSpeed = { viewModel.togglePlaybackSpeed(uiState.recording) },
+                            onToggleSpeed = { viewModel.togglePlaybackSpeed() },
 
                             // Tag navigation within Tag Screen just switches the view
                             onTagClick = { tag -> selectedTag = tag },

@@ -8,7 +8,7 @@ data class ModelSpec(
     val url: String,
     val type: ModelType,
     val description: String,
-    val sha256: String? = null
+    val sha256: String? = null,
     val sizeBytes: Long = 0
 )
 data class ModelBundle(

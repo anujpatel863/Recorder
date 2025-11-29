@@ -7,6 +7,8 @@ import androidx.compose.ui.graphics.toArgb
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import androidx.core.content.edit
+import kotlin.properties.ReadWriteProperty
+import kotlin.reflect.KProperty
 
 object SettingsManager {
     private const val PREFS_NAME = "allrecorder_prefs"
@@ -19,7 +21,7 @@ object SettingsManager {
         _visualizerColorSecondaryFlow.value = visualizerColorSecondary
         _visualizerGradientFlow.value = visualizerGradient
     }
-
+    var showCallRecordings by booleanPreference("show_call_recordings", false)
     // ... (Keep existing properties like autoRecord, etc.) ...
     var autoRecordOnLaunch: Boolean
         get() = prefs.getBoolean("auto_record_launch", false)
@@ -132,4 +134,28 @@ object SettingsManager {
     var protectedTag: String
         get() = prefs.getString("protected_tag", "keep") ?: "keep"
         set(value) = prefs.edit {putString("protected_tag", value)}
+
+    private fun booleanPreference(key: String, default: Boolean = false) = object :
+        ReadWriteProperty<Any?, Boolean> {
+        override fun getValue(thisRef: Any?, property: KProperty<*>) = prefs.getBoolean(key, default)
+        override fun setValue(thisRef: Any?, property: KProperty<*>, value: Boolean) = prefs.edit {
+            putBoolean(
+                key,
+                value
+            )
+        }
+    }
+    private fun intPreference(key: String, default: Int) = object : ReadWriteProperty<Any?, Int> {
+        override fun getValue(thisRef: Any?, property: KProperty<*>) = prefs.getInt(key, default)
+        override fun setValue(thisRef: Any?, property: KProperty<*>, value: Int) = prefs.edit {
+            putInt(
+                key,
+                value
+            )
+        }
+    }
+    private fun stringPreference(key: String, default: String) = object : ReadWriteProperty<Any?, String> {
+        override fun getValue(thisRef: Any?, property: KProperty<*>) = prefs.getString(key, default) ?: default
+        override fun setValue(thisRef: Any?, property: KProperty<*>, value: String) = prefs.edit().putString(key, value).apply()
+    }
 }

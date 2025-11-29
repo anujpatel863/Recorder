@@ -4,4 +4,17 @@
         <string name="app_name">AllRecorder</string>
 
 
+
+<string name="cd_play">Play recording</string>
+<string name="cd_pause">Pause recording</string>
+<string name="cd_star">Star recording</string>
+<string name="cd_unstar">Unstar recording</string>
+<string name="cd_options">Recording options</string>
+<string name="cd_remove_tag">Remove tag</string>
+
+<string name="no_recordings">No recordings yet</string>
+<string name="no_search_results">No matching recordings</string>
+<string name="status_processing">Processing…</string>
+<string name="status_failed">Transcription failed.</string>
+<string name="start_recording">Start Recording</string>
 </resources>

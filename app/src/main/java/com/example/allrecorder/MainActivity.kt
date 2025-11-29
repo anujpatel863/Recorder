@@ -6,6 +6,7 @@ import android.app.Activity
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
@@ -16,8 +17,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -43,15 +44,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
+import androidx.core.net.toUri
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.lifecycleScope
+import android.content.Intent
+import com.example.allrecorder.data.RecordingsRepository
 import com.example.allrecorder.models.ModelRegistry
 import com.example.allrecorder.recordings.AudioVisualizer
 import com.example.allrecorder.recordings.RecordingsScreen
-import com.example.allrecorder.recordings.StarredRecordingsScreen
 import com.example.allrecorder.recordings.RecordingsViewModel
+import com.example.allrecorder.recordings.StarredRecordingsScreen
 import com.example.allrecorder.recordings.TagsScreen
 import com.example.allrecorder.ui.components.ColorPickerDialog
 import com.example.allrecorder.ui.components.ModelManagementDialog
@@ -60,13 +65,9 @@ import com.example.allrecorder.ui.theme.AllRecorderTheme
 import com.example.allrecorder.ui.theme.Monospace
 import com.example.allrecorder.ui.theme.RetroPrimary
 import com.example.allrecorder.ui.theme.RetroPrimaryDark
-import kotlinx.coroutines.launch
 import dagger.hilt.android.AndroidEntryPoint
-import android.os.PowerManager
-import android.provider.Settings
-import android.content.Intent
-import androidx.core.net.toUri
-import android.app.role.RoleManager
+import kotlinx.coroutines.launch
+import javax.inject.Inject
 
 enum class Screen {
     Home, Starred, Tags
@@ -74,25 +75,32 @@ enum class Screen {
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
-    private val roleRequestLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.resultCode == RESULT_OK) {
-            Toast.makeText(this, "Success! App is now the default Call Handler.", Toast.LENGTH_SHORT).show()
-        } else {
-            Toast.makeText(this, "Failed. Call recording may be less reliable.", Toast.LENGTH_SHORT).show()
-        }
-    }
+
+    @Inject
+    lateinit var repository: RecordingsRepository
 
     private val requestPermissionLauncher =
         registerForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
         ) { permissions ->
-            val recordAudioGranted = permissions.getOrDefault(Manifest.permission.RECORD_AUDIO, false)
-            val phoneStateGranted = permissions.getOrDefault(Manifest.permission.READ_PHONE_STATE, false)
+            val recordAudio = permissions.getOrDefault(Manifest.permission.RECORD_AUDIO, false)
+            val readAudio = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                permissions.getOrDefault(Manifest.permission.READ_MEDIA_AUDIO, false)
+            } else {
+                permissions.getOrDefault(Manifest.permission.READ_EXTERNAL_STORAGE, false)
+            }
 
-            if (!recordAudioGranted || !phoneStateGranted) {
-                Toast.makeText(this, "Permissions required for Call Recording.", Toast.LENGTH_LONG).show()
+            if (!recordAudio) Toast.makeText(this, "Microphone needed for recording.", Toast.LENGTH_SHORT).show()
+            if (readAudio) {
+                // Permission granted: Update settings and sync
+                SettingsManager.showCallRecordings = true
+                Toast.makeText(this, "Call import enabled. Scanning...", Toast.LENGTH_SHORT).show()
+                // Note: Actual sync triggered from UI state change in ViewModel or we can't easily reach VM here without hack.
+                // Best practice: The UI switch state will now react to this permission grant if we manage state correctly.
+            } else {
+                // Denied: Revert setting
+                SettingsManager.showCallRecordings = false
+                Toast.makeText(this, "Permission denied. Feature disabled.", Toast.LENGTH_SHORT).show()
             }
         }
 
@@ -103,13 +111,14 @@ class MainActivity : ComponentActivity() {
         SettingsManager.init(this)
         WindowCompat.setDecorFitsSystemWindows(window, false)
 
-        if (!hasPermissions()) requestPermissions()
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
+        }
+
         if (SettingsManager.keepScreenOn) window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        if (SettingsManager.autoRecordOnLaunch && hasPermissions() && !RecordingService.isRecording) {
-            startService(Intent(this, RecordingService::class.java).apply {
-                action = RecordingService.ACTION_START
-            })
+        if (SettingsManager.autoRecordOnLaunch && RecordingService.isRecording.not()) {
+            startService(Intent(this, RecordingService::class.java).apply { action = RecordingService.ACTION_START })
         }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -121,7 +130,9 @@ class MainActivity : ComponentActivity() {
                 MainAppScreen()
             }
         }
-        val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+
+        // Request Battery Optimization Ignore (Optional, good for long recordings)
+        val powerManager = getSystemService(POWER_SERVICE) as android.os.PowerManager
         if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
             val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
                 data = "package:$packageName".toUri()
@@ -129,24 +140,32 @@ class MainActivity : ComponentActivity() {
             startActivity(intent)
         }
     }
-    private fun requestCallScreeningRole() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val roleManager = getSystemService(RoleManager::class.java)
-            if (roleManager.isRoleAvailable(RoleManager.ROLE_CALL_SCREENING)) {
-                if (roleManager.isRoleHeld(RoleManager.ROLE_CALL_SCREENING)) {
-                    Toast.makeText(this, "App is already the default.", Toast.LENGTH_SHORT).show()
-                } else {
-                    val intent = roleManager.createRequestRoleIntent(RoleManager.ROLE_CALL_SCREENING)
-                    roleRequestLauncher.launch(intent)
+
+    // Helper to trigger Import from Repository
+    fun importRecordings() {
+        lifecycleScope.launch {
+            Toast.makeText(this@MainActivity, "Scanning storage...", Toast.LENGTH_SHORT).show()
+            try {
+                repository.importExternalRecordings { count ->
+                    if (count > 0) {
+                        Toast.makeText(this@MainActivity, "Imported $count new recordings.", Toast.LENGTH_LONG).show()
+                    } else {
+                        Toast.makeText(this@MainActivity, "No new recordings found.", Toast.LENGTH_SHORT).show()
+                    }
                 }
+            } catch (e: Exception) {
+                Toast.makeText(this@MainActivity, "Error importing: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
             }
-        } else {
-            Toast.makeText(this, "Not available on this Android version.", Toast.LENGTH_SHORT).show()
         }
     }
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    fun requestStoragePermissions() {
+        val permissions = mutableListOf<String>()
+        permissions.add(Manifest.permission.READ_MEDIA_AUDIO)
 
-
-    @RequiresApi(Build.VERSION_CODES.Q)
+        requestPermissionLauncher.launch(permissions.toTypedArray())
+    }
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     @Composable
     private fun MainAppScreen() {
         val view = LocalView.current
@@ -193,8 +212,6 @@ class MainActivity : ComponentActivity() {
         val audioData by recordingsViewModel.audioData.collectAsState()
         val isRecording by remember { derivedStateOf { recordingsViewModel.isServiceRecording } }
 
-        // --- Visualizer Settings (Live Observables) ---
-        // These fix the "unresolved" error and ensure live updates
         val visColorInt by SettingsManager.visualizerColorFlow.collectAsState()
         val visColorSecInt by SettingsManager.visualizerColorSecondaryFlow.collectAsState()
         val visGradient by SettingsManager.visualizerGradientFlow.collectAsState()
@@ -283,7 +300,6 @@ class MainActivity : ComponentActivity() {
                                     contentAlignment = Alignment.Center
                                 ) {
                                     if (isRecording && SettingsManager.showVisualizer) {
-                                        // Now these variables are correctly defined above
                                         AudioVisualizer(
                                             audioData = audioData,
                                             activeColor = activeColor,
@@ -311,30 +327,32 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     @Composable
     private fun SettingsDrawerContent(
         currentScreen: Screen = Screen.Home,
         onScreenSelected: (Screen) -> Unit = {}
     ) {
+        // State for Dialogs
         var showChunkDialog by remember { mutableStateOf(false) }
         var showLanguageDialog by remember { mutableStateOf(false) }
         var showAsrModelDialog by remember { mutableStateOf(false) }
         var showManageDialog by remember { mutableStateOf(false) }
         var showFormatDialog by remember { mutableStateOf(false) }
-
-        // Picker Dialog States
         var showPrimaryColorPicker by remember { mutableStateOf(false) }
         var showSecondaryColorPicker by remember { mutableStateOf(false) }
         var showRetentionDialog by remember { mutableStateOf(false) }
         var showProtectedTagDialog by remember { mutableStateOf(false) }
 
-        // Observe settings live
+        // Setting Flows
         val currentPrimaryColor by SettingsManager.visualizerColorFlow.collectAsState()
         val currentSecondaryColor by SettingsManager.visualizerColorSecondaryFlow.collectAsState()
         val currentGradientState by SettingsManager.visualizerGradientFlow.collectAsState()
         var autoDeleteEnabled by remember { mutableStateOf(SettingsManager.autoDeleteEnabled) }
         var retentionDays by remember { mutableIntStateOf(SettingsManager.retentionDays) }
         var protectedTag by remember { mutableStateOf(SettingsManager.protectedTag) }
+        var showCallRecordingsState by remember { mutableStateOf(SettingsManager.showCallRecordings) }
+        val recordingsViewModel: RecordingsViewModel = hiltViewModel()
 
         val context = LocalContext.current
         val modelViewModel: ModelManagementViewModel = hiltViewModel()
@@ -349,24 +367,67 @@ class MainActivity : ComponentActivity() {
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
-                Text("Call Recording Setup", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium, color = RetroPrimary)
-
-                val context = LocalContext.current
+                // [ADDED] Library Management for Importing
+                Text("Library Management", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium, color = RetroPrimary)
 
                 NavigationDrawerItem(
                     label = {
                         Column {
-                            Text("Set as Default App")
-                            Text("Required for robust recording", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                            Text("Import Call Recordings")
+                            Text("Scan device for audio files", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
                         }
                     },
-                    icon = { Icon(Icons.Default.Star, contentDescription = null) },
+                    icon = { Icon(Icons.Default.CloudDownload, contentDescription = null) },
                     selected = false,
                     onClick = {
-                        // Call the function we added to MainActivity
-                        (context as? MainActivity)?.requestCallScreeningRole()
+                        val permission =
+                            Manifest.permission.READ_MEDIA_AUDIO
+
+                        if (ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED) {
+                            // Permission granted, trigger scan
+                            (context as? MainActivity)?.importRecordings()
+                        } else {
+                            // Request Permissions
+                            (context as? MainActivity)?.requestPermissions()
+                        }
                     }
                 )
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                Text("Library Management", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium, color = RetroPrimary)
+
+                NavigationDrawerItem(
+                    label = {
+                        Column {
+                            Text("Show Call Recordings")
+                            Text("Scan & import calls from device", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                        }
+                    },
+                    badge = {
+                        Switch(
+                            checked = showCallRecordingsState,
+                            onCheckedChange = { isChecked ->
+                                if (isChecked) {
+                                    // Check Permission
+                                    val perm = Manifest.permission.READ_MEDIA_AUDIO
+                                    if (ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED) {
+                                        showCallRecordingsState = true
+                                        recordingsViewModel.updateShowCallRecordings(true, context)
+                                    } else {
+                                        // [FIX 3] Call the function directly (since we are inside MainActivity)
+                                        requestStoragePermissions()
+                                    }
+                                } else {
+                                    showCallRecordingsState = false
+                                    recordingsViewModel.updateShowCallRecordings(false, context)
+                                }
+                            }
+                        )
+                    },
+                    selected = false,
+                    onClick = { }
+                )
+
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
                 Text("Automatic Cleanup", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
 
@@ -404,7 +465,6 @@ class MainActivity : ComponentActivity() {
                     )
                 }
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-                
 
                 // --- VISUALIZER STYLE SECTION ---
                 Text("Visualizer Style", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
@@ -418,7 +478,6 @@ class MainActivity : ComponentActivity() {
                 )
 
                 if (visualizerState) {
-                    // 1. Primary Color
                     NavigationDrawerItem(
                         label = { Text("Primary Color") },
                         badge = {
@@ -434,7 +493,6 @@ class MainActivity : ComponentActivity() {
                         onClick = { showPrimaryColorPicker = true }
                     )
 
-                    // 2. Gradient Toggle
                     NavigationDrawerItem(
                         label = { Text("Use Gradient") },
                         badge = { Switch(checked = currentGradientState, onCheckedChange = { SettingsManager.visualizerGradient = it }) },
@@ -442,7 +500,6 @@ class MainActivity : ComponentActivity() {
                         onClick = { }
                     )
 
-                    // 3. Secondary Color
                     if (currentGradientState) {
                         NavigationDrawerItem(
                             label = { Text("Secondary Color") },
@@ -462,10 +519,8 @@ class MainActivity : ComponentActivity() {
                 }
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-                // --- End Visualizer Section ---
 
                 Text("Preferences", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
-                // ... (Existing Prefs) ...
                 var simplePlaybackState by remember { mutableStateOf(SettingsManager.simplePlaybackEnabled) }
                 NavigationDrawerItem(
                     label = { Text("Simple Playback Mode") },
@@ -500,7 +555,7 @@ class MainActivity : ComponentActivity() {
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
                 Text("AI Processing", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
-                // (Existing AI toggles... copied for completeness)
+
                 val noiseBundle = ModelRegistry.getBundle("bundle_enhancement")!!
                 val noiseState by modelViewModel.getBundleState(noiseBundle).collectAsState()
                 var asrEnhancementEnabled by remember { mutableStateOf(SettingsManager.asrEnhancementEnabled) }
@@ -533,7 +588,6 @@ class MainActivity : ComponentActivity() {
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
-                // --- Models & Storage ---
                 Text("Models & Storage", modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.titleMedium)
                 NavigationDrawerItem(label = { Text("Manage AI Models") }, selected = false, onClick = { showManageDialog = true })
                 NavigationDrawerItem(label = { Text("Recording Format") }, badge = { Text(SettingsManager.recordingFormat.name, style = MaterialTheme.typography.labelSmall) }, selected = false, onClick = { showFormatDialog = true })
@@ -543,7 +597,6 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // --- Dialogs ---
         if (showRetentionDialog) {
             RetentionPeriodDialog(
                 currentDays = retentionDays,
@@ -613,7 +666,6 @@ class MainActivity : ComponentActivity() {
         if (showManageDialog) ModelManagementDialog({ showManageDialog = false }, modelViewModel)
     }
 
-    // ... (Keep existing helpers: ModelDependentSwitch, AsrModelSelectionDialog, ListPreferenceDialog, etc.) ...
     @Composable
     fun RetentionPeriodDialog(currentDays: Int, onDismiss: () -> Unit, onConfirm: (Int) -> Unit) {
         val options = listOf(2, 3, 7, 14, 30, 60)
@@ -712,18 +764,15 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    private fun hasPermissions(): Boolean {
-        return ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-    }
-
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
-    private fun requestPermissions() {
-        // [UPDATED] Request Call permissions along with Audio
-        requestPermissionLauncher.launch(arrayOf(
+    fun requestPermissions() {
+        val permissions = mutableListOf(
             Manifest.permission.RECORD_AUDIO,
-            Manifest.permission.POST_NOTIFICATIONS,
-            Manifest.permission.READ_PHONE_STATE,
-            Manifest.permission.READ_CALL_LOG
-        ))
+            Manifest.permission.POST_NOTIFICATIONS
+        )
+        // Add storage permissions for import feature
+        permissions.add(Manifest.permission.READ_MEDIA_AUDIO)
+
+        requestPermissionLauncher.launch(permissions.toTypedArray())
     }
 }

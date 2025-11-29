@@ -158,7 +158,7 @@ fun RecordingsScreen(
                         onToggleStar = { viewModel.toggleStar(uiState.recording) },
                         onSaveToDownloads = { viewModel.saveRecordingAs( uiState.recording) },
                         onExpand = { viewModel.loadAmplitudes(uiState.recording) },
-                        onToggleSpeed = { viewModel.togglePlaybackSpeed(uiState.recording) },
+                        onToggleSpeed = { viewModel.togglePlaybackSpeed() },
                         onTagClick = { tag -> viewModel.setTagFilter(tag) },
                         onRemoveTag = { tag -> viewModel.removeTag(uiState.recording, tag) },
                         onExport = { fmt -> viewModel.exportTranscript(context, uiState.recording, fmt) }
@@ -226,7 +226,7 @@ fun StarredRecordingsScreen(viewModel: RecordingsViewModel) {
                         onToggleStar = { viewModel.toggleStar(uiState.recording) },
                         onSaveToDownloads = { viewModel.saveRecordingAs( uiState.recording) },
                         onExpand = { viewModel.loadAmplitudes(uiState.recording) },
-                        onToggleSpeed = { viewModel.togglePlaybackSpeed(uiState.recording) },
+                        onToggleSpeed = { viewModel.togglePlaybackSpeed() },
                         onTagClick = { tag -> viewModel.setTagFilter(tag) },
                         onRemoveTag = { tag -> viewModel.removeTag(uiState.recording, tag) },
                         onExport = { fmt -> viewModel.exportTranscript(context, uiState.recording, fmt) }
@@ -241,7 +241,7 @@ fun StarredRecordingsScreen(viewModel: RecordingsViewModel) {
 @Composable
 fun RecordingItem(
     uiState: RecordingsViewModel.RecordingUiState,
-    playerState: RecordingsViewModel.PlayerState,
+    playerState: AudioPlayerManager.PlayerState, // [FIXED] Updated to use AudioPlayerManager.PlayerState
     onPlayPause: () -> Unit,
     onRewind: () -> Unit,
     onForward: () -> Unit,
@@ -528,7 +528,12 @@ private fun PlayerControls(
             Slider(value = currentPosition.toFloat(), onValueChange = onSeek, valueRange = 0f..totalDuration.toFloat().coerceAtLeast(1f))
         } else {
             if (amplitudes.isNotEmpty()) {
-                PlaybackWaveform(amplitudes = amplitudes, progress = if (totalDuration > 0) currentPosition.toFloat() / totalDuration else 0f, onSeek = { percent -> onSeek(percent * totalDuration) }, modifier = Modifier.fillMaxWidth().height(60.dp).padding(vertical = 8.dp))
+                PlaybackWaveform(
+                    amplitudes = amplitudes,
+                    progress = if (totalDuration > 0) currentPosition.toFloat() / totalDuration else 0f,
+                    onSeek = { percent -> onSeek(percent * totalDuration) },
+                    modifier = Modifier.fillMaxWidth().height(60.dp).padding(vertical = 8.dp)
+                )
             } else { Box(Modifier.fillMaxWidth().height(60.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(modifier = Modifier.size(24.dp)) } }
         }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {

@@ -2,7 +2,8 @@ package com.example.allrecorder.recordings
 
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -15,16 +16,13 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.abs
 import kotlin.math.sin
 
-/**
- * LIVE Recording Visualizer - "Liquid Thread" Style
- * Clean Design: No Shadow, Horizontal Gradient, Smooth Interpolation.
- */
 @Composable
 fun AudioVisualizer(
     audioData: ByteArray,
@@ -32,13 +30,35 @@ fun AudioVisualizer(
     activeColor: Color = MaterialTheme.colorScheme.primary,
     secondaryColor: Color = MaterialTheme.colorScheme.tertiary,
     useGradient: Boolean = true
-
 ) {
-    // [ROBUSTNESS] Temporal Smoothing State
     val pointsCount = 40
+    // [OPTIMIZATION] 1. Pre-calculate raw amplitudes only when data changes
+    val rawAmplitudes = remember(audioData) {
+        val amplitudes = FloatArray(pointsCount)
+        if (audioData.isNotEmpty()) {
+            val shortBuffer = ByteBuffer.wrap(audioData).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+            val totalSamples = shortBuffer.remaining()
+            val step = totalSamples / pointsCount.toFloat()
+
+            for (i in 0 until pointsCount) {
+                val index = (i * step).toInt().coerceIn(0, totalSamples - 1)
+                var sum = 0f
+                val windowSize = 3
+                var count = 0
+                for(w in -windowSize..windowSize) {
+                    val sampleIdx = (index + w).coerceIn(0, totalSamples - 1)
+                    sum += abs(shortBuffer.get(sampleIdx).toInt())
+                    count++
+                }
+                amplitudes[i] = (sum / count) / 32768f // Normalize 0..1
+            }
+        }
+        amplitudes
+    }
+
+    // State for temporal smoothing (visual only)
     var smoothedAmplitudes by remember { mutableStateOf(FloatArray(pointsCount)) }
 
-    // Infinite transition for the "idle" breathing effect
     val infiniteTransition = rememberInfiniteTransition(label = "wave")
     val phase by infiniteTransition.animateFloat(
         initialValue = 0f,
@@ -50,78 +70,34 @@ fun AudioVisualizer(
         label = "phase"
     )
 
-    Canvas(
-        modifier = modifier
-            .fillMaxWidth()
-            .fillMaxHeight()
-    ) {
+    Canvas(modifier = modifier.fillMaxWidth().fillMaxHeight()) {
         val width = size.width
         val height = size.height
         val centerY = height / 2f
 
-        // 1. Setup Gradient Brush
-        // Changed to HORIZONTAL gradient for better visibility along the wave
         val brush = if (useGradient) {
-            Brush.horizontalGradient(
-                colors = listOf(activeColor, secondaryColor),
-                startX = 0f,
-                endX = width
-            )
+            Brush.horizontalGradient(colors = listOf(activeColor, secondaryColor), startX = 0f, endX = width)
         } else {
             SolidColor(activeColor)
         }
 
-        // 2. Parse Audio Data
-        val currentAmplitudes = FloatArray(pointsCount)
-        if (audioData.isNotEmpty()) {
-            val shortBuffer = ByteBuffer.wrap(audioData).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
-            val totalSamples = shortBuffer.remaining()
-            val step = totalSamples / pointsCount.toFloat()
-
-            for (i in 0 until pointsCount) {
-                val index = (i * step).toInt().coerceIn(0, totalSamples - 1)
-                // Window average for stability
-                var sum = 0f
-                val windowSize = 3
-                var count = 0
-                for(w in -windowSize..windowSize) {
-                    val sampleIdx = (index + w).coerceIn(0, totalSamples - 1)
-                    sum += abs(shortBuffer.get(sampleIdx).toInt())
-                    count++
-                }
-                currentAmplitudes[i] = (sum / count) / 32768f // Normalize 0..1
-            }
-        }
-
-        // 3. Temporal Smoothing (Decay Logic)
+        // [OPTIMIZATION] 2. Only handle smoothing and drawing in the Draw phase
         for (i in 0 until pointsCount) {
-            val target = currentAmplitudes[i]
+            val target = rawAmplitudes[i]
             val current = smoothedAmplitudes[i]
-
-            if (target > current) {
-                smoothedAmplitudes[i] = lerp(current, target, 0.6f) // Fast attack
-            } else {
-                smoothedAmplitudes[i] = lerp(current, target, 0.15f) // Slow decay
-            }
+            smoothedAmplitudes[i] = if (target > current) lerp(current, target, 0.6f) else lerp(current, target, 0.15f)
         }
 
-        // 4. Build Cubic Path
         val path = Path()
-
         val pointXStep = width / (pointsCount - 1)
         val pathPoints = mutableListOf<Offset>()
 
         for (i in 0 until pointsCount) {
             val x = i * pointXStep
-
-            // Apply Idle Wave + Audio Amplitude
             val idleWave = sin(i * 0.2f + phase) * (height * 0.02f)
-            val audioHeight = smoothedAmplitudes[i] * (height * 0.5f) // Increased height sensitivity slightly
-
-            // Center Bias: Make center of screen react more than edges
+            val audioHeight = smoothedAmplitudes[i] * (height * 0.5f)
             val centerBias = sin(Math.PI * (i.toFloat() / pointsCount)).toFloat()
             val finalY = centerY - (audioHeight * centerBias) + idleWave
-
             pathPoints.add(Offset(x, finalY))
         }
 
@@ -130,36 +106,21 @@ fun AudioVisualizer(
             for (i in 0 until pathPoints.size - 1) {
                 val p0 = pathPoints[i]
                 val p1 = pathPoints[i+1]
-
-                // Control points for cubic bezier (smooth transition)
                 val cp1 = Offset((p0.x + p1.x) / 2, p0.y)
                 val cp2 = Offset((p0.x + p1.x) / 2, p1.y)
-
                 path.cubicTo(cp1.x, cp1.y, cp2.x, cp2.y, p1.x, p1.y)
             }
         }
 
-        // 5. Draw Main Thread (Clean, No Shadow)
-        drawPath(
-            path = path,
-            brush = brush,
-            style = Stroke(
-                width = 4.dp.toPx(), // Main thick line
-                cap = StrokeCap.Round,
-                join = StrokeJoin.Round
-            )
-        )
+        drawPath(path = path, brush = brush, style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
     }
 }
 
-// Helper for interpolation
-private fun lerp(start: Float, stop: Float, amount: Float): Float {
-    return start + (stop - start) * amount
-}
+private fun lerp(start: Float, stop: Float, amount: Float): Float = start + (stop - start) * amount
 
 /**
  * PLAYBACK Waveform / Scrubber
- * (Unchanged)
+ * [IMPROVED] Supports Tap, Drag, AND Precision Scrubbing (Vertical Drag)
  */
 @Composable
 fun PlaybackWaveform(
@@ -167,46 +128,79 @@ fun PlaybackWaveform(
     progress: Float,
     onSeek: (Float) -> Unit,
     modifier: Modifier = Modifier,
-    barColor: Color = MaterialTheme.colorScheme.primary // [ADDED PARAMETER]
+    barColor: Color = MaterialTheme.colorScheme.primary
 ) {
-    val barWidth = 4f
-    val gap = 2f
+    val density = LocalDensity.current
+    // Threshold to engage precision mode (drag down 50dp)
+    val precisionThresholdPx = with(density) { 50.dp.toPx() }
 
     Canvas(
         modifier = modifier
             .fillMaxSize()
             .pointerInput(Unit) {
-                detectTapGestures { offset ->
-                    val totalBars = amplitudes.size
-                    val totalWidth = totalBars * (barWidth + gap)
-                    // If the click is within the waveform width
-                    if (totalWidth > 0) {
-                        val seekPercent = (offset.x / size.width).coerceIn(0f, 1f)
-                        onSeek(seekPercent)
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    val width = size.width.toFloat()
+                    val initialY = down.position.y
+
+                    if (width > 0f) {
+                        // Initial seek
+                        onSeek((down.position.x / width).coerceIn(0f, 1f))
+                        down.consume()
+                    }
+
+                    var change = down
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val nextChange = event.changes.firstOrNull { it.id == change.id } ?: break
+                        if (!nextChange.pressed) break
+
+                        val currentX = nextChange.position.x
+                        val currentY = nextChange.position.y
+
+                        // [PRECISION SEEKING]
+                        // If user drags finger vertically away from bar, slow down seeking
+                        val verticalDist = abs(currentY - initialY)
+                        val sensitivity = if (verticalDist > precisionThresholdPx) {
+                            // Scale sensitivity based on distance.
+                            // At 50dp = 1.0x, at 200dp ~= 0.2x
+                            val factor = 1f - ((verticalDist - precisionThresholdPx) / (precisionThresholdPx * 4)).coerceIn(0f, 0.9f)
+                            factor
+                        } else {
+                            1f
+                        }
+
+                        if (width > 0f) {
+                            // We calculate delta from previous X to apply sensitivity
+                            val dx = currentX - change.position.x
+                            val currentProgress = progress // Note: This captures the progress passed in composition
+                            val newProgress = (currentProgress + (dx / width) * sensitivity).coerceIn(0f, 1f)
+
+                            // Only trigger seek if there was movement
+                            if (abs(dx) > 0.5f) {
+                                onSeek(newProgress)
+                            }
+                        }
+
+                        nextChange.consume()
+                        change = nextChange
                     }
                 }
             }
     ) {
-        val canvasWidth = size.width
-        val canvasHeight = size.height
         val totalBars = amplitudes.size
-
-        // Avoid division by zero
         if (totalBars == 0) return@Canvas
 
-        // Dynamic calculation to fit bars in width
-        val totalSpace = canvasWidth
-        val effectiveBarWidth = totalSpace / totalBars
+        val effectiveBarWidth = size.width / totalBars
         val spacing = effectiveBarWidth * 0.2f
         val drawBarWidth = effectiveBarWidth - spacing
 
         amplitudes.forEachIndexed { index, amplitude ->
             val percent = amplitude / 100f
-            val barHeight = canvasHeight * percent
+            val barHeight = size.height * percent
             val x = index * effectiveBarWidth
-            val y = (canvasHeight - barHeight) / 2
+            val y = (size.height - barHeight) / 2
 
-            // Determine color based on progress
             val isPlayed = (index.toFloat() / totalBars) <= progress
             val color = if (isPlayed) barColor else barColor.copy(alpha = 0.5f)
 

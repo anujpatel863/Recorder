@@ -41,4 +41,7 @@ interface RecordingDao {
 
     @Query("SELECT * FROM recordings WHERE startTime < :cutoffTimestamp AND isStarred = 0")
     suspend fun getOldNonStarredRecordings(cutoffTimestamp: Long): List<Recording>
+
+    @Query("SELECT filePath FROM recordings")
+    suspend fun getAllPaths(): List<String>
 }

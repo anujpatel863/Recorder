@@ -10,7 +10,6 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
-import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
@@ -35,7 +34,6 @@ import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -58,7 +56,7 @@ class RecordingService : Service() {
     // --- Audio Engine ---
     private var audioRecord: AudioRecord? = null
 
-    // --- AAC Encoding (for M4A) ---
+    // --- AAC Encoding ---
     private var mediaCodec: MediaCodec? = null
     private var mediaMuxer: MediaMuxer? = null
     private var audioTrackIndex = -1
@@ -83,8 +81,8 @@ class RecordingService : Service() {
     private val chunkHandler = Handler(Looper.getMainLooper())
     private var chunkRunnable: Runnable? = null
     private var wakeLock: PowerManager.WakeLock? = null
-    private var currentCallerInfo: String = ""
-    private var isPhoneCallMode = false
+
+    // [REMOVED] Call specific variables
 
     private val binder = LocalBinder()
     private val _audioDataFlow = MutableStateFlow(ByteArray(0))
@@ -103,7 +101,6 @@ class RecordingService : Service() {
         var isRecording = false
         const val ACTION_STOP = "com.example.allrecorder.ACTION_STOP"
         const val ACTION_START = "com.example.allrecorder.ACTION_START"
-        // [NEW] Action to restart recording immediately (for format changes)
         const val ACTION_RESTART = "com.example.allrecorder.ACTION_RESTART"
     }
 
@@ -117,9 +114,7 @@ class RecordingService : Service() {
         }
         audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
 
-        // Register callback to detect if WE are being silenced by another app
         audioRecordingCallback = object : AudioManager.AudioRecordingCallback() {
-
             override fun onRecordingConfigChanged(configs: List<AudioRecordingConfiguration>) {
                 super.onRecordingConfigChanged(configs)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -129,29 +124,13 @@ class RecordingService : Service() {
         }
         audioManager.registerAudioRecordingCallback(audioRecordingCallback!!, null)
     }
+
     @RequiresApi(Build.VERSION_CODES.Q)
     private fun checkIfWeAreSilenced(configs: List<AudioRecordingConfiguration>) {
         if (!isRecordingInternal) return
-
-        // 1. Find our own session
         val myConfig = configs.find { it.clientAudioSessionId == audioRecord?.audioSessionId }
-
-        // 2. Check if we are "silenced" by the OS
-        if (myConfig != null) {
-            if (myConfig.isClientSilenced) {
-                Log.e(TAG, "CRITICAL: Microphone is being used by another app (System/Assistant). We are recording silence.")
-                // Optional: Send broadcast to UI to show a Toast/Warning
-                // sendBroadcast(Intent("com.example.allrecorder.SHOW_TOAST").putExtra("msg", "Microphone blocked by another app!"))
-            } else {
-                Log.i(TAG, "Microphone is active and capturing audio.")
-            }
-        }
-
-        // 3. Debug: List all other apps using the Mic
-        configs.forEach { config ->
-            if (config.clientAudioSessionId != audioRecord?.audioSessionId) {
-                Log.w(TAG, "Another App is recording! Source: ${config.clientAudioSource}, ID: ${config.clientAudioSessionId}")
-            }
+        if (myConfig != null && myConfig.isClientSilenced) {
+            Log.e(TAG, "CRITICAL: Microphone blocked.")
         }
     }
 
@@ -180,22 +159,16 @@ class RecordingService : Service() {
                 return START_NOT_STICKY
             }
             ACTION_RESTART -> {
-                // [NEW] Hot Swap Logic
                 if (isRecordingInternal) {
-                    Log.i(TAG, "Restarting recording due to format change...")
                     scope.launch {
-                        // Stop current, but keep service alive (false)
                         stopRecording(stopService = false)
-                        // Start new immediately (will pick up new settings)
                         startRecording()
                     }
                 }
                 return START_STICKY
             }
             ACTION_START, null -> {
-                isPhoneCallMode = intent?.getBooleanExtra("IS_PHONE_CALL", false) ?: false
-                val number = intent?.getStringExtra("CALLER_NUMBER")
-                currentCallerInfo = if (isPhoneCallMode) getContactName(number) else ""
+                // [REMOVED] Call logic extraction
                 startForegroundSafely()
                 startRecording()
                 return START_STICKY
@@ -225,16 +198,13 @@ class RecordingService : Service() {
             return
         }
 
-        try { if (wakeLock?.isHeld == false) wakeLock?.acquire() } catch (e: Exception) {}
+        try { if (wakeLock?.isHeld == false) wakeLock?.acquire() } catch (_: Exception) {}
 
-        // Read the LATEST format from settings
         currentFormat = SettingsManager.recordingFormat
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        val fileName = if (isPhoneCallMode && currentCallerInfo.isNotEmpty()) {
-            "${currentCallerInfo}_$timeStamp${currentFormat.extension}"
-        } else {
-            "Rec_$timeStamp${currentFormat.extension}"
-        }
+        // [MODIFIED] Simplified naming
+        val fileName = "Rec_$timeStamp${currentFormat.extension}"
+
         filePath = File(filesDir, fileName).absolutePath
 
         try {
@@ -252,12 +222,6 @@ class RecordingService : Service() {
             recordingStartTime = System.currentTimeMillis()
             scope.launch {
                 WidgetManager.updateWidgets(applicationContext, true, recordingStartTime)
-            }
-            if (isPhoneCallMode) {
-                scope.launch(Dispatchers.Main) {
-                    delay(1500)
-                    setSpeakerphoneOn(true)
-                }
             }
 
             val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
@@ -277,19 +241,15 @@ class RecordingService : Service() {
     private fun prepareAudioRecord() {
         val bufferSizeInBytes = bufferSize * 2
 
-        // [NEW] Choose source based on mode
-
+        // [MODIFIED] Always use MIC
         val audioSource = MediaRecorder.AudioSource.MIC
-
 
         try {
             audioRecord = AudioRecord(audioSource, sampleRate, channelConfig, audioFormat, bufferSizeInBytes)
             if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-                Log.w(TAG, "Preferred source failed, falling back to MIC")
-                // Release the broken instance
+                // Fallback attempt
                 audioRecord?.release()
-                // Fallback to basic MIC
-                audioRecord = AudioRecord(MediaRecorder.AudioSource.MIC, sampleRate, channelConfig, audioFormat, bufferSizeInBytes)
+                audioRecord = AudioRecord(MediaRecorder.AudioSource.DEFAULT, sampleRate, channelConfig, audioFormat, bufferSizeInBytes)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to init AudioRecord", e)
@@ -298,38 +258,8 @@ class RecordingService : Service() {
 
         if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) throw IOException("AudioRecord init failed")
     }
-    private fun setSpeakerphoneOn(enable: Boolean = true) {
-        if (!isPhoneCallMode) return
 
-        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-
-        try {
-            // MODE_IN_CALL required for the routing to apply to the voice call
-            audioManager.mode = AudioManager.MODE_IN_CALL
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                // Android 12+ (API 31+): Use setCommunicationDevice
-                val devices = audioManager.availableCommunicationDevices
-                if (enable) {
-                    val speaker = devices.find { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
-                    if (speaker != null) {
-                        val result = audioManager.setCommunicationDevice(speaker)
-                        Log.i(TAG, "Speakerphone set (Modern API): $result")
-                    }
-                } else {
-                    audioManager.clearCommunicationDevice()
-                }
-            } else {
-                // Android 11 and below: Use deprecated methods
-                @Suppress("DEPRECATION")
-                if (audioManager.isSpeakerphoneOn != enable) {
-                    audioManager.isSpeakerphoneOn = enable
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to toggle speakerphone", e)
-        }
-    }
+    // [REMOVED] setSpeakerphoneOn method
 
     private fun prepareWavHeader(file: File) {
         FileOutputStream(file).use { out -> out.write(ByteArray(44)) }
@@ -378,7 +308,7 @@ class RecordingService : Service() {
                 try {
                     wavOutputStream?.close()
                     updateWavHeader(File(filePath), totalBytesWritten.toInt())
-                } catch (e: Exception) {}
+                } catch (_: Exception) {}
             }
         }
     }
@@ -403,10 +333,8 @@ class RecordingService : Service() {
             val bufferInfo = MediaCodec.BufferInfo()
             var outputIndex = codec.dequeueOutputBuffer(bufferInfo, 0)
 
-            // [COMPLETE] Robust loop handling Format Change
             while (outputIndex != MediaCodec.INFO_TRY_AGAIN_LATER) {
                 if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    // Muxer must start only after format change
                     audioTrackIndex = mediaMuxer?.addTrack(codec.outputFormat) ?: -1
                     mediaMuxer?.start()
                     isMuxerStarted = true
@@ -437,7 +365,7 @@ class RecordingService : Service() {
         }
         cancelChunking()
 
-        try { audioRecord?.stop(); audioRecord?.release() } catch (e: Exception) {}
+        try { audioRecord?.stop(); audioRecord?.release() } catch (_: Exception) {}
         audioRecord = null
 
         recordingJob?.join()
@@ -455,7 +383,7 @@ class RecordingService : Service() {
         }
 
         saveRecordingToDatabase(filePath, recordingStartTime, System.currentTimeMillis() - recordingStartTime)
-        try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (e: Exception) {}
+        try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (_: Exception) {}
 
         if (stopService) {
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -467,14 +395,13 @@ class RecordingService : Service() {
     }
 
     private suspend fun saveRecordingToDatabase(path: String, startTime: Long, duration: Long) {
-        val tagsList = if (isPhoneCallMode) listOf("call") else emptyList()
-
+        // [MODIFIED] No call tags
         val newRecording = Recording(
             filePath = path,
             startTime = startTime,
             duration = duration,
             processingStatus = 0,
-            tags = tagsList
+            tags = emptyList()
         )
         recordingDao.insert(newRecording)
     }
@@ -499,7 +426,7 @@ class RecordingService : Service() {
 
     override fun onDestroy() {
         if (isRecordingInternal) scope.launch { stopRecording(stopService = true) }
-        try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch(e:Exception){}
+        try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch(_:Exception){}
         if (audioRecordingCallback != null) {
             audioManager.unregisterAudioRecordingCallback(audioRecordingCallback!!)
         }
@@ -521,8 +448,8 @@ class RecordingService : Service() {
         val openPendingIntent = PendingIntent.getActivity(this, 0, openIntent, PendingIntent.FLAG_IMMUTABLE)
 
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setContentTitle("AllRecorder 24/7")
-            .setContentText(if (isRecording) "Recording continuously..." else "Saving...")
+            .setContentTitle("AllRecorder")
+            .setContentText(if (isRecording) "Recording..." else "Saving...")
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setOngoing(true)
             .setContentIntent(openPendingIntent)
@@ -530,35 +457,7 @@ class RecordingService : Service() {
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .build()
     }
-    private fun getContactName(phoneNumber: String?): String {
-        if (phoneNumber.isNullOrEmpty()) return "Unknown_Call"
 
-        // Sanitize number for filename safety
-        val safeNumber = phoneNumber.replace(Regex("[^a-zA-Z0-9]"), "")
-
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
-            return "Call_$safeNumber"
-        }
-
-        val uri = android.net.Uri.withAppendedPath(android.provider.ContactsContract.PhoneLookup.CONTENT_FILTER_URI, android.net.Uri.encode(phoneNumber))
-        val projection = arrayOf(android.provider.ContactsContract.PhoneLookup.DISPLAY_NAME)
-
-        try {
-            contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    val nameIndex = cursor.getColumnIndex(android.provider.ContactsContract.PhoneLookup.DISPLAY_NAME)
-                    if (nameIndex >= 0) {
-                        val name = cursor.getString(nameIndex)
-                        // Sanitize name for filename (remove spaces, special chars)
-                        return name.replace(Regex("[^a-zA-Z0-9]"), "_")
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Contact lookup failed", e)
-        }
-        return "Call_$safeNumber"
-    }
     @Throws(IOException::class)
     private fun updateWavHeader(file: File, dataSize: Int) {
         val channels = 1; val bitDepth = 16; val byteRate = sampleRate * channels * bitDepth / 8; val totalDataLen = dataSize + 36

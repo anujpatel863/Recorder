@@ -7,10 +7,10 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
-import android.media.MediaPlayer
 import android.os.Build
 import android.os.IBinder
 import android.os.VibrationEffect
+import android.widget.Toast
 import androidx.annotation.RequiresApi
 import androidx.annotation.RequiresPermission
 import androidx.appcompat.app.AlertDialog
@@ -38,20 +38,19 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.File
 import javax.inject.Inject
-
 
 @HiltViewModel
 class RecordingsViewModel @Inject constructor(
     application: Application,
-    private val repository: RecordingsRepository
+    private val repository: RecordingsRepository,
+    private val playerManager: AudioPlayerManager // [IMPROVED] Injected Manager
 ) : AndroidViewModel(application) {
 
     var isServiceRecording by mutableStateOf(RecordingService.isRecording)
-
 
     @SuppressLint("StaticFieldLeak")
     private var recordingService: RecordingService? = null
@@ -61,6 +60,7 @@ class RecordingsViewModel @Inject constructor(
     val audioData: StateFlow<ByteArray> = _audioData.asStateFlow()
 
     private val _formattedDuration = MutableStateFlow("00:00")
+    private val _showCallRecordings = MutableStateFlow(SettingsManager.showCallRecordings)
     val formattedDuration: StateFlow<String> = _formattedDuration.asStateFlow()
 
     private val connection = object : ServiceConnection {
@@ -79,14 +79,14 @@ class RecordingsViewModel @Inject constructor(
     }
 
     // --- PLAYBACK STATE ---
-    private var mediaPlayer: MediaPlayer? = null
-    private val _playerState = MutableStateFlow(PlayerState())
-    val playerState: StateFlow<PlayerState> = _playerState.asStateFlow()
-    private var progressUpdateJob: Job? = null
+    // [IMPROVED] State now comes directly from the Manager
+    val playerState: StateFlow<AudioPlayerManager.PlayerState> = playerManager.playerState
 
-    // Cache
+    // Cache for visualization
     private val amplitudeCache = mutableMapOf<Long, List<Int>>()
-    private val playbackSpeeds = mutableMapOf<Long, Float>()
+
+    // [FIX] Dedicated trigger for amplitude updates to ensure StateFlow emits a change
+    private val _amplitudeUpdateTrigger = MutableStateFlow(0)
 
     // --- FILTER & SEARCH STATE ---
     private val _tagFilter = MutableStateFlow<String?>(null)
@@ -94,10 +94,6 @@ class RecordingsViewModel @Inject constructor(
 
     private val _searchQuery = MutableStateFlow("")
     private val _rawSemanticResults = MutableStateFlow<List<Recording>?>(null)
-
-    // --- UI UPDATES ---
-    // [FIX] Dedicated trigger for amplitude updates to ensure StateFlow emits a change
-    private val _amplitudeUpdateTrigger = MutableStateFlow(0)
 
     private data class TranscriptionProgress(
         val recordingId: Long? = null,
@@ -116,10 +112,21 @@ class RecordingsViewModel @Inject constructor(
         repository.getAllRecordings(),
         _tagFilter,
         _transcriptionProgress,
-        _amplitudeUpdateTrigger
-    ) { recordings, tag, progress, _ ->
-        val filtered = if (tag != null) recordings.filter { it.tags.contains(tag) } else recordings
-        combineRecordingAndProgress(filtered, progress)
+        _amplitudeUpdateTrigger,
+        _showCallRecordings
+    ) { recordings, tag, progress, _, showCalls ->
+        // 1. Filter by tag
+        var filtered = if (tag != null) recordings.filter { it.tags.contains(tag) } else recordings
+
+        // 2. Filter by "Show Calls" Setting
+        if (!showCalls) {
+            filtered = filtered.filter { !it.tags.contains("imported") }
+        }
+
+        // 3. Sort by Time & Date (Descending)
+        val sorted = filtered.sortedByDescending { it.startTime }
+
+        combineRecordingAndProgress(sorted, progress)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val availableTags: StateFlow<List<String>> = allRecordings.map { list ->
@@ -175,6 +182,30 @@ class RecordingsViewModel @Inject constructor(
         }
         checkConsistency()
     }
+    fun updateShowCallRecordings(enabled: Boolean, context: Context) {
+        _showCallRecordings.value = enabled
+        SettingsManager.showCallRecordings = enabled
+        if (enabled) {
+            syncCallRecordings(context)
+        }
+    }
+    fun syncCallRecordings(context: Context) {
+        viewModelScope.launch {
+            try {
+                repository.importExternalRecordings { count ->
+                    // Optional: Notify only if new ones found or generic success
+                    if (count > 0) {
+                        viewModelScope.launch(Dispatchers.Main) {
+                            Toast.makeText(context, "Found $count new recordings.", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
 
     fun checkConsistency() {
         viewModelScope.launch {
@@ -207,8 +238,6 @@ class RecordingsViewModel @Inject constructor(
         _tagFilter.value = tag
     }
 
-
-
     fun removeTag(recording: Recording, tagToRemove: String) {
         viewModelScope.launch(Dispatchers.IO) {
             val updatedTags = recording.tags - tagToRemove
@@ -237,16 +266,13 @@ class RecordingsViewModel @Inject constructor(
         viewModelScope.launch {
             val amps = repository.loadAmplitudes(recording)
             synchronized(amplitudeCache) { amplitudeCache[recording.id] = amps }
-            // [FIX] Increment trigger to force UI update immediately
             _amplitudeUpdateTrigger.value += 1
         }
     }
 
-
-
     fun deleteRecording(context: Context, recording: Recording) {
         AlertDialog.Builder(context).setTitle("Delete").setMessage("Confirm delete?").setPositiveButton("Delete") { _, _ ->
-            if (recording.id == _playerState.value.playingRecordingId) stopPlayback()
+            if (recording.id == playerState.value.playingRecordingId) stopPlayback()
             viewModelScope.launch { repository.deleteRecording(recording) }
         }.setNegativeButton("Cancel", null).show()
     }
@@ -256,11 +282,11 @@ class RecordingsViewModel @Inject constructor(
     }
 
     @RequiresApi(Build.VERSION_CODES.Q)
-    fun saveRecordingAs( recording: Recording) {
+    fun saveRecordingAs(recording: Recording) {
         viewModelScope.launch { repository.saveRecordingAs(recording) }
     }
 
-    fun transcribeRecording( recording: Recording) {
+    fun transcribeRecording(recording: Recording) {
         viewModelScope.launch {
             _transcriptionProgress.value = TranscriptionProgress(recording.id, 0f, "Starting...")
             repository.transcribeRecording(recording) { progress, message ->
@@ -271,161 +297,80 @@ class RecordingsViewModel @Inject constructor(
         }
     }
 
-    // --- PLAYBACK CONTROLS ---
+    // --- PLAYBACK CONTROLS (DELEGATED TO MANAGER) ---
 
     fun onSeek(recording: Recording, progress: Float) {
-        val currentId = _playerState.value.playingRecordingId
-        val newPos = progress.toInt()
+        val duration = recording.duration.toInt()
+        val targetMs = (progress * duration).toInt()
 
-        if (currentId != recording.id) {
-            mediaPlayer?.release()
-            mediaPlayer = null
-            _playerState.update {
-                PlayerState(playingRecordingId = recording.id, isPlaying = false, currentPosition = newPos, maxDuration = recording.duration.toInt())
-            }
-        } else {
-            _playerState.update { it.copy(currentPosition = newPos) }
-            mediaPlayer?.seekTo(newPos)
+        // If we are seeking a different recording than currently playing, start it first
+        if (playerState.value.playingRecordingId != recording.id) {
+            playerManager.startPlayback(recording.id, recording.filePath, recording.duration)
+            playerManager.pausePlayback() // Start then pause to verify user intent or just play?
+            // Usually onSeek implies dragging, so we seek.
         }
+        playerManager.seekTo(targetMs)
     }
 
-    fun togglePlaybackSpeed(recording: Recording) {
-        val currentSpeed = playbackSpeeds[recording.id] ?: 1.0f
-        val newSpeed = when (currentSpeed) {
-            1.0f -> 1.5f; 1.5f -> 2.0f; 2.0f -> 0.5f; else -> 1.0f
-        }
-        playbackSpeeds[recording.id] = newSpeed
-
-        if (_playerState.value.playingRecordingId == recording.id) {
-            try { mediaPlayer?.let { it.playbackParams = it.playbackParams.setSpeed(newSpeed) } } catch (e: Exception) {}
-        }
-        _transcriptionProgress.value = _transcriptionProgress.value.copy()
+    fun togglePlaybackSpeed() {
+        playerManager.toggleSpeed()
     }
 
     fun onPlayPauseClicked(recording: Recording) {
-        val currentState = _playerState.value
+        val currentState = playerState.value
         if (currentState.playingRecordingId == recording.id && currentState.isPlaying) {
-            pausePlayback()
+            playerManager.pausePlayback()
         } else {
-            startPlayback(recording)
+            playerManager.startPlayback(recording.id, recording.filePath, recording.duration)
         }
-    }
-
-    private fun startPlayback(recording: Recording) {
-        val isResume = _playerState.value.playingRecordingId == recording.id
-        if (!isResume) stopPlayback()
-
-        mediaPlayer = MediaPlayer().apply {
-            try {
-                setDataSource(recording.filePath)
-                prepare()
-                if (isResume && _playerState.value.currentPosition > 0) seekTo(_playerState.value.currentPosition)
-
-                val speedToUse = playbackSpeeds[recording.id] ?: 1.0f
-                playbackParams = playbackParams.setSpeed(speedToUse)
-
-                setOnCompletionListener { stopPlayback() }
-            } catch (e: Exception) {
-                e.printStackTrace()
-                stopPlayback()
-                return
-            }
-        }
-
-        if (!isResume) {
-            _playerState.update { it.copy(playingRecordingId = recording.id, maxDuration = recording.duration.toInt(), currentPosition = 0) }
-        }
-
-        mediaPlayer?.start()
-        _playerState.update { it.copy(isPlaying = true) }
-        startUpdatingProgress()
-    }
-
-    private fun pausePlayback() {
-        mediaPlayer?.pause()
-        _playerState.update { it.copy(isPlaying = false) }
-        stopUpdatingProgress()
     }
 
     fun stopPlayback() {
-        stopUpdatingProgress()
-        _playerState.value = PlayerState()
-        mediaPlayer?.let {
-            try {
-                if (it.isPlaying) it.stop()
-                it.release()
-            } catch(e: Exception) {
-                e.printStackTrace()
-            }
-        }
-        mediaPlayer = null
+        playerManager.stopPlayback()
     }
 
     fun onRewind() {
-        val current = _playerState.value
+        val current = playerState.value
         if (current.playingRecordingId == null) return
         val newPos = (current.currentPosition - 5000).coerceAtLeast(0)
-        mediaPlayer?.seekTo(newPos)
-        _playerState.update { it.copy(currentPosition = newPos) }
+        playerManager.seekTo(newPos)
     }
 
     fun onForward() {
-        val current = _playerState.value
+        val current = playerState.value
         if (current.playingRecordingId == null) return
         val newPos = (current.currentPosition + 5000).coerceAtMost(current.maxDuration)
-        mediaPlayer?.seekTo(newPos)
-        _playerState.update { it.copy(currentPosition = newPos) }
+        playerManager.seekTo(newPos)
     }
 
-    private fun startUpdatingProgress() {
-        stopUpdatingProgress()
-        progressUpdateJob = viewModelScope.launch(Dispatchers.IO) {
-            while (isActive && _playerState.value.isPlaying) {
-                try {
-                    mediaPlayer?.let {
-                        if (it.isPlaying) {
-                            val pos = it.currentPosition
-                            _playerState.update { s -> s.copy(currentPosition = pos) }
-                        }
-                    }
-                } catch (e: IllegalStateException) {
-                    break
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-                delay(50)
-            }
-        }
-    }
-
-    private fun stopUpdatingProgress() {
-        progressUpdateJob?.cancel()
-        progressUpdateJob = null
-    }
-
+    // Helper to combine data (removed manual MediaPlayer checks)
     private fun combineRecordingAndProgress(recordings: List<Recording>, progress: TranscriptionProgress): List<RecordingUiState> {
         return recordings.map { rec ->
-            val amps = amplitudeCache[rec.id] ?: emptyList()
-            val speed = playbackSpeeds[rec.id] ?: 1.0f
-            if (rec.id == progress.recordingId)
-                RecordingUiState(rec, progress.progress, progress.message, amplitudes = amps, playbackSpeed = speed)
-            else
-                RecordingUiState(rec, amplitudes = amps, playbackSpeed = speed)
+            val isPlaying = playerState.value.playingRecordingId == rec.id
+            val speed = if (isPlaying) playerState.value.playbackSpeed else 1.0f
+            RecordingUiState(
+                recording = rec,
+                liveProgress = if (rec.id == progress.recordingId) progress.progress else null,
+                liveMessage = if (rec.id == progress.recordingId) progress.message else null,
+                amplitudes = amplitudeCache[rec.id] ?: emptyList(),
+                playbackSpeed = speed
+            )
         }
     }
-
-
 
     fun exportTranscript(context: Context, recording: Recording, format: TranscriptExporter.Format) {
         viewModelScope.launch(Dispatchers.IO) {
             TranscriptExporter.export(context, recording, format)
         }
     }
-    fun duplicateRecording( recording: Recording, tagToAdd: String? = null) {
+
+    fun duplicateRecording(recording: Recording, tagToAdd: String? = null) {
         viewModelScope.launch {
             repository.duplicateRecording(recording, tagToAdd)
         }
     }
+
+    // [IMPROVED] Robust Save As with Duplicate Name Checking
     fun saveAsNewRecording(
         originalRecording: Recording,
         newName: String,
@@ -433,12 +378,23 @@ class RecordingsViewModel @Inject constructor(
         newTranscript: String
     ) {
         viewModelScope.launch {
-            repository.saveAsNewRecording(originalRecording, newName, newTags, newTranscript)
-            // Optional: You could show a Snackbar here saying "Saved as copy"
+            // Check for existing names to avoid overwrite
+            var finalName = newName
+            // We get the current list of names from the loaded state to check quickly
+            val existingNames = allRecordings.value.map { File(it.recording.filePath).nameWithoutExtension }
+
+            if (existingNames.contains(finalName)) {
+                var counter = 1
+                while (existingNames.contains("$newName ($counter)")) {
+                    counter++
+                }
+                finalName = "$newName ($counter)"
+            }
+
+            repository.saveAsNewRecording(originalRecording, finalName, newTags, newTranscript)
         }
     }
 
-    // consolidated update for the new Edit Dialog
     fun updateRecordingDetails(
         recording: Recording,
         newName: String,
@@ -449,6 +405,7 @@ class RecordingsViewModel @Inject constructor(
             repository.updateRecordingDetails(recording, newName, newTags, newTranscript)
         }
     }
+
     fun trimRecording(recording: Recording, startMs: Long, endMs: Long, saveAsNew: Boolean, tagToAdd: String? = null) {
         viewModelScope.launch {
             repository.trimRecording(recording, startMs, endMs, saveAsNew, tagToAdd)
@@ -456,46 +413,28 @@ class RecordingsViewModel @Inject constructor(
     }
 
     // Helper for the Trim Dialog to play just the segment
+    // [IMPROVED] Uses PlayerManager
     fun playSegment(recording: Recording, startMs: Long, endMs: Long) {
-        stopPlayback()
-        mediaPlayer = MediaPlayer().apply {
-            try {
-                setDataSource(recording.filePath)
-                prepare()
-                seekTo(startMs.toInt())
+        // Start playback at the specific position
+        playerManager.startPlayback(recording.id, recording.filePath, recording.duration)
+        playerManager.seekTo(startMs.toInt())
 
-                // Set end point listener
-                // Note: Precise end loop requires a Runnable loop in UI or simple delayed check
-                // We'll just start it here and let the UI state manage the "stop at endMs"
-            } catch (e: Exception) { return }
-        }
-
-        _playerState.update {
-            it.copy(
-                playingRecordingId = recording.id,
-                isPlaying = true,
-                currentPosition = startMs.toInt(),
-                maxDuration = recording.duration.toInt()
-            )
-        }
-        mediaPlayer?.start()
-
-        // Launch a job to stop at endMs
+        // Monitor playback to stop at endMs
         viewModelScope.launch {
-            while (isActive && mediaPlayer?.isPlaying == true) {
-                if ((mediaPlayer?.currentPosition ?: 0) >= endMs) {
-                    pausePlayback()
-                    mediaPlayer?.seekTo(startMs.toInt()) // Reset to start of trim
+            while (isActive && playerState.value.playingRecordingId == recording.id && playerState.value.isPlaying) {
+                if (playerState.value.currentPosition >= endMs) {
+                    playerManager.pausePlayback()
+                    playerManager.seekTo(startMs.toInt()) // Reset to start of segment
                     break
                 }
                 delay(50)
             }
         }
-        startUpdatingProgress()
     }
 
     fun bindService(context: Context) { Intent(context, RecordingService::class.java).also { intent -> context.bindService(intent, connection, Context.BIND_AUTO_CREATE) } }
     fun unbindService(context: Context) { if (isBound) { context.unbindService(connection); isBound = false; recordingService = null } }
+
     @RequiresPermission(Manifest.permission.VIBRATE)
     fun toggleRecordingService(context: Context) {
         val intent = Intent(context, RecordingService::class.java)
@@ -515,11 +454,11 @@ class RecordingsViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
-        stopPlayback()
+        playerManager.stopPlayback()
         if (isBound) try { getApplication<Application>().unbindService(connection) } catch(e:Exception){}
     }
 
-    data class PlayerState(val playingRecordingId: Long? = null, val isPlaying: Boolean = false, val currentPosition: Int = 0, val maxDuration: Int = 0)
+    // Note: PlayerState is now imported from AudioPlayerManager, but RecordingUiState is specific to this Screen
     data class RecordingUiState(
         val recording: Recording,
         val liveProgress: Float? = null,
