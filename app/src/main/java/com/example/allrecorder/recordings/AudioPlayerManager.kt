@@ -92,15 +92,13 @@ class AudioPlayerManager @Inject constructor(
 
     fun seekTo(positionMs: Int) {
         mediaPlayer?.seekTo(positionMs)
-        _playerState.update { it.copy(currentPosition = positionMs) }
+        _playerState.update { it.copy(currentPosition = positionMs) } // <-- Updates UI immediately!
     }
 
     fun setPlaybackSpeed(speed: Float) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            try {
-                mediaPlayer?.playbackParams = mediaPlayer?.playbackParams?.setSpeed(speed) ?: PlaybackParams().setSpeed(speed)
-            } catch (e: Exception) { }
-        }
+        try {
+            mediaPlayer?.playbackParams = mediaPlayer?.playbackParams?.setSpeed(speed) ?: PlaybackParams().setSpeed(speed)
+        } catch (e: Exception) { }
         _playerState.update { it.copy(playbackSpeed = speed) }
     }
 

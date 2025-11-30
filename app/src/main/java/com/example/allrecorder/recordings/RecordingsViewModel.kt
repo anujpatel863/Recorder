@@ -382,12 +382,16 @@ class RecordingsViewModel @Inject constructor(
         val duration = recording.duration.toInt()
         val targetMs = (progress * duration).toInt()
 
-        // If we are seeking a different recording than currently playing, start it first
+        // 1. Handle switching recordings if necessary
         if (playerState.value.playingRecordingId != recording.id) {
             playerManager.startPlayback(recording.id, recording.filePath, recording.duration)
-            playerManager.pausePlayback() // Start then pause to verify user intent or just play?
-            // Usually onSeek implies dragging, so we seek.
+            playerManager.pausePlayback()
         }
+
+        // 2. Perform the seek
+        // Use 'playerManager' (not audioPlayerManager).
+        // The manager's seekTo() function ALREADY updates the timestamp immediately,
+        // so you don't need manual state updates here.
         playerManager.seekTo(targetMs)
     }
 

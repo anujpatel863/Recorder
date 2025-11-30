@@ -679,44 +679,155 @@ fun ExportFormatDialog(onDismiss: () -> Unit, onConfirm: (TranscriptExporter.For
     )
 }
 
+
+
 @Composable
 private fun PlayerControls(
-    isPlaying: Boolean, currentPosition: Int, totalDuration: Int, amplitudes: List<Int>, playbackSpeed: Float, isTranscribing: Boolean,
-    onPlayPause: () -> Unit, onRewind: () -> Unit, onForward: () -> Unit, onSeek: (Float) -> Unit, onTranscribe: () -> Unit, onToggleSpeed: () -> Unit
+    isPlaying: Boolean,
+    currentPosition: Int,
+    totalDuration: Int,
+    amplitudes: List<Int>,
+    playbackSpeed: Float,
+    isTranscribing: Boolean,
+    onPlayPause: () -> Unit,
+    onRewind: () -> Unit,
+    onForward: () -> Unit,
+    onSeek: (Float) -> Unit,
+    onTranscribe: () -> Unit,
+    onToggleSpeed: () -> Unit
 ) {
     val simplePlayback = SettingsManager.simplePlaybackEnabled
-    Column(modifier = Modifier.padding(top = 12.dp)) {
+
+    // [LOGIC] 0.0 - 1.0 Calculation
+    val currentProgress = if (totalDuration > 0) currentPosition.toFloat() / totalDuration else 0f
+
+    // [INTERFACE FIX] Added horizontal padding (24.dp) to move controls away from the edge.
+    // This prevents the Navigation Drawer from intercepting your scrub gesture.
+    Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp)) {
+
         if (simplePlayback) {
-            Slider(value = currentPosition.toFloat(), onValueChange = onSeek, valueRange = 0f..totalDuration.toFloat().coerceAtLeast(1f))
+            Slider(
+                value = currentProgress,
+                onValueChange = onSeek,
+                valueRange = 0f..1f,
+                modifier = Modifier.fillMaxWidth(),
+                colors = SliderDefaults.colors(
+                    thumbColor = MaterialTheme.colorScheme.primary,
+                    activeTrackColor = MaterialTheme.colorScheme.primary,
+                    inactiveTrackColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            )
         } else {
             if (amplitudes.isNotEmpty()) {
-                PlaybackWaveform(
-                    amplitudes = amplitudes,
-                    progress = if (totalDuration > 0) currentPosition.toFloat() / totalDuration else 0f,
-                    onSeek = { percent -> onSeek(percent * totalDuration) },
-                    modifier = Modifier.fillMaxWidth().height(60.dp).padding(vertical = 8.dp)
-                )
-            } else { Box(Modifier.fillMaxWidth().height(60.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(modifier = Modifier.size(24.dp)) } }
+                // [STYLE] Container for waveform with a subtle background
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(80.dp) // Taller for better touch target
+                        .background(
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                            shape = MaterialTheme.shapes.medium
+                        )
+                        .padding(horizontal = 12.dp, vertical = 16.dp), // Inner padding
+                    contentAlignment = Alignment.Center
+                ) {
+                    PlaybackWaveform(
+                        amplitudes = amplitudes,
+                        progress = currentProgress,
+                        onSeek = onSeek,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(80.dp)
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f), MaterialTheme.shapes.medium),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                }
+            }
         }
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(formatDuration(currentPosition.toLong()), style = MaterialTheme.typography.labelSmall)
-            Text(formatDuration(totalDuration.toLong()), style = MaterialTheme.typography.labelSmall)
+
+        // Time Labels
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = formatDuration(currentPosition.toLong()),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Text(
+                text = formatDuration(totalDuration.toLong()),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
-        Spacer(modifier = Modifier.height(4.dp))
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onToggleSpeed) { Text("${playbackSpeed}x", fontWeight = FontWeight.Bold) }
-            IconButton(onClick = onRewind) { Icon(painterResource(R.drawable.ic_fast_rewind), "Rewind") }
-            FilledIconButton(onClick = onPlayPause, modifier = Modifier.size(56.dp)) { Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, "Play/Pause", modifier = Modifier.fillMaxSize().padding(12.dp)) }
-            IconButton(onClick = onForward) { Icon(painterResource(R.drawable.ic_fast_forward), "Forward") }
-        }
+
         Spacer(modifier = Modifier.height(8.dp))
-        Button(onClick = onTranscribe, enabled = !isTranscribing, modifier = Modifier.fillMaxWidth().height(40.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondaryContainer, contentColor = MaterialTheme.colorScheme.onSecondaryContainer)) {
-            if (isTranscribing) { CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text("Transcribing...") }
-            else { Icon(Icons.Default.Description, null, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(8.dp)); Text("Transcribe Recording") }
+
+        // Controls Row
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Speed Button (Styled)
+            TextButton(
+                onClick = onToggleSpeed,
+                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSurface)
+            ) {
+                Text("${playbackSpeed}x", fontWeight = FontWeight.Bold)
+            }
+
+            IconButton(onClick = onRewind) {
+                Icon(painterResource(R.drawable.ic_fast_rewind), "Rewind", tint = MaterialTheme.colorScheme.onSurface)
+            }
+
+            // Play/Pause (Prominent)
+            FilledIconButton(
+                onClick = onPlayPause,
+                modifier = Modifier.size(64.dp), // Slightly larger
+                colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.primary)
+            ) {
+                Icon(
+                    if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                    "Play/Pause",
+                    modifier = Modifier.fillMaxSize().padding(16.dp),
+                    tint = MaterialTheme.colorScheme.onPrimary
+                )
+            }
+
+            IconButton(onClick = onForward) {
+                Icon(painterResource(R.drawable.ic_fast_forward), "Forward", tint = MaterialTheme.colorScheme.onSurface)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Transcribe Button
+        OutlinedButton(
+            onClick = onTranscribe,
+            enabled = !isTranscribing,
+            modifier = Modifier.fillMaxWidth().height(40.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+        ) {
+            if (isTranscribing) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(8.dp))
+                Text("Processing...", style = MaterialTheme.typography.bodySmall)
+            } else {
+                Icon(Icons.Default.Description, null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Transcribe", style = MaterialTheme.typography.bodyMedium)
+            }
         }
     }
 }
-
 @Composable
 private fun ItemOptionsMenu(
     onEditDetails: () -> Unit, onDuplicate: () -> Unit, onTrim: () -> Unit, onDelete: () -> Unit, onSaveToDownloads: () -> Unit, onExportTranscript: () -> Unit, hasTranscript: Boolean
