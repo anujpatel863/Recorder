@@ -38,6 +38,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
@@ -94,6 +95,8 @@ class RecordingsViewModel @Inject constructor(
 
     private val _searchQuery = MutableStateFlow("")
     private val _rawSemanticResults = MutableStateFlow<List<Recording>?>(null)
+    private val _selectedIds = MutableStateFlow<Set<Long>>(emptySet())
+    val selectedIds: StateFlow<Set<Long>> = _selectedIds.asStateFlow()
 
     private data class TranscriptionProgress(
         val recordingId: Long? = null,
@@ -181,6 +184,80 @@ class RecordingsViewModel @Inject constructor(
             }
         }
         checkConsistency()
+    }
+    fun toggleSelection(id: Long) {
+        _selectedIds.update { current ->
+            if (current.contains(id)) current - id else current + id
+        }
+    }
+
+    fun selectAll() {
+        val currentList = searchResults.value ?: allRecordings.value
+        _selectedIds.value = currentList.map { it.recording.id }.toSet()
+    }
+
+    fun clearSelection() {
+        _selectedIds.value = emptySet()
+    }
+
+    fun deleteSelected(context: Context) {
+        val idsToDelete = _selectedIds.value.toList() // Copy list
+        if (idsToDelete.isEmpty()) return
+
+        AlertDialog.Builder(context)
+            .setTitle("Delete")
+            .setMessage("Are you sure you want to delete ${idsToDelete.size} recordings?")
+            .setPositiveButton("Delete") { _, _ ->
+                viewModelScope.launch {
+                    if (idsToDelete.contains(playerState.value.playingRecordingId)) {
+                        stopPlayback()
+                    }
+                    val recordingsToDelete = allRecordings.value
+                        .filter { idsToDelete.contains(it.recording.id) }
+                        .map { it.recording }
+
+                    recordingsToDelete.forEach { repository.deleteRecording(it) }
+                    clearSelection()
+                    Toast.makeText(context, "${recordingsToDelete.size} recordings deleted", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    fun transcribeSelected(context: Context) {
+        val idsToTranscribe = _selectedIds.value
+        if (idsToTranscribe.isEmpty()) return
+
+        viewModelScope.launch {
+            val recordingsToTranscribe = allRecordings.value
+                .filter { idsToTranscribe.contains(it.recording.id) }
+                .map { it.recording }
+
+            recordingsToTranscribe.forEach { rec ->
+                transcribeRecording(rec)
+            }
+            clearSelection()
+            Toast.makeText(context, "Transcription started for ${recordingsToTranscribe.size} items", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.Q)
+    fun downloadSelected(context: Context) {
+        val idsToDownload = _selectedIds.value
+        if (idsToDownload.isEmpty()) return
+
+        viewModelScope.launch {
+            val recordingsToDownload = allRecordings.value
+                .filter { idsToDownload.contains(it.recording.id) }
+                .map { it.recording }
+
+            recordingsToDownload.forEach { rec ->
+                repository.saveRecordingAs(rec)
+            }
+            clearSelection()
+            Toast.makeText(context, "Saved ${recordingsToDownload.size} recordings to Downloads", Toast.LENGTH_SHORT).show()
+        }
     }
     fun updateShowCallRecordings(enabled: Boolean, context: Context) {
         _showCallRecordings.value = enabled

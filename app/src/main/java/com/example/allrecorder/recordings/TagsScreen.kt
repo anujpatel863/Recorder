@@ -27,11 +27,20 @@ fun TagsScreen(viewModel: RecordingsViewModel) {
     val playerState by viewModel.playerState.collectAsState()
     val context = LocalContext.current
 
+    // Selection State
+    val selectedIds by viewModel.selectedIds.collectAsState()
+    val isSelectionMode = selectedIds.isNotEmpty()
+
     // Local state to track which tag is currently selected (if any)
     var selectedTag by remember { mutableStateOf<String?>(null) }
 
-    // Handle Back Button: If inside a tag, go back to tag list.
-    BackHandler(enabled = selectedTag != null) {
+    // Handle Back Button:
+    // 1. If in selection mode, clear selection.
+    // 2. If viewing a tag, go back to tag list.
+    BackHandler(enabled = isSelectionMode) {
+        viewModel.clearSelection()
+    }
+    BackHandler(enabled = !isSelectionMode && selectedTag != null) {
         selectedTag = null
     }
 
@@ -73,36 +82,58 @@ fun TagsScreen(viewModel: RecordingsViewModel) {
             }
         } else {
             // --- STATE 2: TAGGED RECORDINGS LIST ---
-            Column(modifier = Modifier.fillMaxSize()) {
-                // Header with Back Button
-                Surface(shadowElevation = 2.dp, color = MaterialTheme.colorScheme.surface) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        IconButton(onClick = { selectedTag = null }) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
-                        }
-                        Text(
-                            "Tag: #$selectedTag",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold
+            Scaffold(
+                topBar = {
+                    if (isSelectionMode) {
+                        SelectionTopBar(
+                            selectedCount = selectedIds.size,
+                            onClearSelection = { viewModel.clearSelection() },
+                            onSelectAll = { viewModel.selectAll() },
+                            onDeleteSelected = { viewModel.deleteSelected(context) },
+                            onTranscribeSelected = { viewModel.transcribeSelected(context) },
+                            onDownloadSelected = { viewModel.downloadSelected(context) }
                         )
+                    } else {
+                        // Header with Back Button
+                        Surface(shadowElevation = 2.dp, color = MaterialTheme.colorScheme.surface) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                IconButton(onClick = { selectedTag = null }) {
+                                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                                }
+                                Text(
+                                    "Tag: #$selectedTag",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
                     }
                 }
-
+            ) { paddingValues ->
                 // Filtered List
                 val taggedRecordings = allRecordings.filter { it.recording.tags.contains(selectedTag) }
 
                 LazyColumn(
-                    contentPadding = PaddingValues(bottom = 80.dp, top = 8.dp, start = 8.dp, end = 8.dp)
+                    contentPadding = PaddingValues(
+                        top = paddingValues.calculateTopPadding() + 8.dp,
+                        bottom = 80.dp,
+                        start = 8.dp,
+                        end = 8.dp
+                    )
                 ) {
                     items(taggedRecordings, key = { it.recording.id }) { uiState ->
 
-                        // [UPDATED] Matches RecordingsScreen with Auto-Tags & Trim Support
+                        // [UPDATED] Matches RecordingsScreen with Selection Params
                         RecordingItem(
                             uiState = uiState,
                             playerState = playerState,
+                            isSelectionMode = isSelectionMode,
+                            isSelected = selectedIds.contains(uiState.recording.id),
+                            onToggleSelection = { viewModel.toggleSelection(uiState.recording.id) },
+
                             onPlayPause = { viewModel.onPlayPauseClicked(uiState.recording) },
                             onRewind = viewModel::onRewind,
                             onForward = viewModel::onForward,
@@ -113,15 +144,12 @@ fun TagsScreen(viewModel: RecordingsViewModel) {
                                 viewModel.updateRecordingDetails(uiState.recording, name, tags, transcript)
                             },
                             onSaveAsNew = { name, tags, transcript ->
-                                // Add "saveAs" tag
                                 viewModel.saveAsNewRecording(uiState.recording, name, tags + "saveAs", transcript)
                             },
                             onDuplicate = {
-                                // Add "duplicate" tag
                                 viewModel.duplicateRecording( uiState.recording, "duplicate")
                             },
                             onTrimConfirm = { start, end, copy ->
-                                // Add "trimmed" tag
                                 viewModel.trimRecording(uiState.recording, start, end, copy, "trimmed")
                             },
                             onPreviewTrim = { start, end -> viewModel.playSegment(uiState.recording, start, end) },

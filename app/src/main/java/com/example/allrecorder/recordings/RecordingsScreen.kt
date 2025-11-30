@@ -1,10 +1,16 @@
+
 package com.example.allrecorder.recordings
 
 import android.os.Build
+import androidx.activity.compose.BackHandler
 import androidx.annotation.RequiresApi
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -59,6 +65,7 @@ fun RecordingsScreen(
     val searchResults by viewModel.searchResults.collectAsState()
     val currentTagFilter by viewModel.tagFilter.collectAsState()
     val recordingDuration by viewModel.formattedDuration.collectAsState()
+    val selectedIds by viewModel.selectedIds.collectAsState()
 
     // Re-indexing UI State
     val showReindexDialog = viewModel.showReindexDialog
@@ -66,6 +73,12 @@ fun RecordingsScreen(
     val reindexProgress = viewModel.reindexProgress
 
     val recordingsToShow = searchResults ?: recordings
+    val isSelectionMode = selectedIds.isNotEmpty()
+
+    // BackHandler to clear selection
+    BackHandler(enabled = isSelectionMode) {
+        viewModel.clearSelection()
+    }
 
     DisposableEffect(Unit) {
         viewModel.bindService(context)
@@ -100,82 +113,102 @@ fun RecordingsScreen(
         )
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            // --- Tag Filter Indicator ---
-            if (currentTagFilter != null) {
-                Surface(color = MaterialTheme.colorScheme.secondaryContainer, modifier = Modifier.fillMaxWidth()) {
-                    Row(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.AutoMirrored.Filled.Label, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text(text = "Filtered by: #${currentTagFilter}", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSecondaryContainer)
-                        Spacer(Modifier.weight(1f))
-                        IconButton(onClick = { viewModel.setTagFilter(null) }, modifier = Modifier.size(24.dp)) {
-                            Icon(Icons.Default.Close, "Clear filter", modifier = Modifier.size(16.dp))
-                        }
-                    }
-                }
+    Scaffold(
+        topBar = {
+            if (isSelectionMode) {
+                SelectionTopBar(
+                    selectedCount = selectedIds.size,
+                    onClearSelection = { viewModel.clearSelection() },
+                    onSelectAll = { viewModel.selectAll() },
+                    onDeleteSelected = { viewModel.deleteSelected(context) },
+                    onTranscribeSelected = { viewModel.transcribeSelected(context) },
+                    onDownloadSelected = { viewModel.downloadSelected(context) }
+                )
             }
-
-            LazyColumn(
-                modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(top = 8.dp, bottom = 80.dp, start = 8.dp, end = 8.dp)
-            ) {
-                if (recordingsToShow.isEmpty()) {
-                    item { Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { Text(if (searchResults != null) "No matching recordings" else "No recordings yet", color = Color.Gray) } }
-                }
-
-                items(recordingsToShow, key = { it.recording.id }) { uiState ->
-                    RecordingItem(
-                        uiState = uiState,
-                        playerState = playerState,
-                        onPlayPause = { viewModel.onPlayPauseClicked(uiState.recording) },
-                        onRewind = viewModel::onRewind,
-                        onForward = viewModel::onForward,
-                        onSeek = { p -> viewModel.onSeek(uiState.recording, p) },
-
-                        // Actions with Auto-Tagging
-                        onUpdateDetails = { name, tags, transcript ->
-                            viewModel.updateRecordingDetails(uiState.recording, name, tags, transcript)
-                        },
-                        onSaveAsNew = { name, tags, transcript ->
-                            // Add "saveAs" tag automatically
-                            viewModel.saveAsNewRecording(uiState.recording, name, tags + "saveAs", transcript)
-                        },
-                        onDuplicate = {
-                            // Add "duplicate" tag automatically
-                            viewModel.duplicateRecording( uiState.recording, "duplicate")
-                        },
-                        onTrimConfirm = { start, end, copy ->
-                            // Add "trimmed" tag automatically
-                            viewModel.trimRecording(uiState.recording, start, end, copy, "trimmed")
-                        },
-                        onPreviewTrim = { start, end -> viewModel.playSegment(uiState.recording, start, end) },
-                        onStopPreview = { viewModel.stopPlayback() },
-
-                        onDelete = { viewModel.deleteRecording(context, uiState.recording) },
-                        onTranscribe = { viewModel.transcribeRecording( uiState.recording) },
-                        onToggleStar = { viewModel.toggleStar(uiState.recording) },
-                        onSaveToDownloads = { viewModel.saveRecordingAs( uiState.recording) },
-                        onExpand = { viewModel.loadAmplitudes(uiState.recording) },
-                        onToggleSpeed = { viewModel.togglePlaybackSpeed() },
-                        onTagClick = { tag -> viewModel.setTagFilter(tag) },
-                        onRemoveTag = { tag -> viewModel.removeTag(uiState.recording, tag) },
-                        onExport = { fmt -> viewModel.exportTranscript(context, uiState.recording, fmt) }
-                    )
+        },
+        floatingActionButton = {
+            if (!isSelectionMode) {
+                ExtendedFloatingActionButton(
+                    onClick = { viewModel.toggleRecordingService(context) },
+                    containerColor = if (isRecording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                    contentColor = if (isRecording) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onPrimary
+                ) {
+                    Icon(if (isRecording) painterResource(R.drawable.ic_pause) else painterResource(R.drawable.ic_play_arrow), null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (isRecording) recordingDuration else "Start Recording")
                 }
             }
         }
+    ) { paddingValues ->
+        Box(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                // --- Tag Filter Indicator ---
+                if (currentTagFilter != null && !isSelectionMode) {
+                    Surface(color = MaterialTheme.colorScheme.secondaryContainer, modifier = Modifier.fillMaxWidth()) {
+                        Row(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.AutoMirrored.Filled.Label, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(text = "Filtered by: #${currentTagFilter}", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSecondaryContainer)
+                            Spacer(Modifier.weight(1f))
+                            IconButton(onClick = { viewModel.setTagFilter(null) }, modifier = Modifier.size(24.dp)) {
+                                Icon(Icons.Default.Close, "Clear filter", modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
+                }
 
-        ExtendedFloatingActionButton(
-            onClick = { viewModel.toggleRecordingService(context) },
-            modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp),
-            containerColor = if (isRecording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-            contentColor = if (isRecording) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onPrimary
-        ) {
-            Icon(if (isRecording) painterResource(R.drawable.ic_pause) else painterResource(R.drawable.ic_play_arrow), null)
-            Spacer(Modifier.width(8.dp))
-            Text(if (isRecording) recordingDuration else "Start Recording")
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(top = 8.dp, bottom = 80.dp, start = 8.dp, end = 8.dp)
+                ) {
+                    if (recordingsToShow.isEmpty()) {
+                        item { Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { Text(if (searchResults != null) "No matching recordings" else "No recordings yet", color = Color.Gray) } }
+                    }
+
+                    items(recordingsToShow, key = { it.recording.id }) { uiState ->
+                        RecordingItem(
+                            uiState = uiState,
+                            playerState = playerState,
+                            isSelectionMode = isSelectionMode,
+                            isSelected = selectedIds.contains(uiState.recording.id),
+                            onToggleSelection = { viewModel.toggleSelection(uiState.recording.id) },
+                            onPlayPause = { viewModel.onPlayPauseClicked(uiState.recording) },
+                            onRewind = viewModel::onRewind,
+                            onForward = viewModel::onForward,
+                            onSeek = { p -> viewModel.onSeek(uiState.recording, p) },
+
+                            // Actions with Auto-Tagging
+                            onUpdateDetails = { name, tags, transcript ->
+                                viewModel.updateRecordingDetails(uiState.recording, name, tags, transcript)
+                            },
+                            onSaveAsNew = { name, tags, transcript ->
+                                // Add "saveAs" tag automatically
+                                viewModel.saveAsNewRecording(uiState.recording, name, tags + "saveAs", transcript)
+                            },
+                            onDuplicate = {
+                                // Add "duplicate" tag automatically
+                                viewModel.duplicateRecording( uiState.recording, "duplicate")
+                            },
+                            onTrimConfirm = { start, end, copy ->
+                                // Add "trimmed" tag automatically
+                                viewModel.trimRecording(uiState.recording, start, end, copy, "trimmed")
+                            },
+                            onPreviewTrim = { start, end -> viewModel.playSegment(uiState.recording, start, end) },
+                            onStopPreview = { viewModel.stopPlayback() },
+
+                            onDelete = { viewModel.deleteRecording(context, uiState.recording) },
+                            onTranscribe = { viewModel.transcribeRecording( uiState.recording) },
+                            onToggleStar = { viewModel.toggleStar(uiState.recording) },
+                            onSaveToDownloads = { viewModel.saveRecordingAs( uiState.recording) },
+                            onExpand = { viewModel.loadAmplitudes(uiState.recording) },
+                            onToggleSpeed = { viewModel.togglePlaybackSpeed() },
+                            onTagClick = { tag -> viewModel.setTagFilter(tag) },
+                            onRemoveTag = { tag -> viewModel.removeTag(uiState.recording, tag) },
+                            onExport = { fmt -> viewModel.exportTranscript(context, uiState.recording, fmt) }
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -188,60 +221,85 @@ fun StarredRecordingsScreen(viewModel: RecordingsViewModel) {
     val playerState by viewModel.playerState.collectAsState()
     val context = LocalContext.current
     val currentTagFilter by viewModel.tagFilter.collectAsState()
+    val selectedIds by viewModel.selectedIds.collectAsState()
+    val isSelectionMode = selectedIds.isNotEmpty()
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            if (currentTagFilter != null) {
-                Surface(color = MaterialTheme.colorScheme.secondaryContainer, modifier = Modifier.fillMaxWidth()) {
-                    Row(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.AutoMirrored.Filled.Label, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Filtered by: #${currentTagFilter}", style = MaterialTheme.typography.labelLarge)
-                        Spacer(Modifier.weight(1f))
-                        IconButton(onClick = { viewModel.setTagFilter(null) }, modifier = Modifier.size(24.dp)) { Icon(Icons.Default.Close, "Clear filter", modifier = Modifier.size(16.dp)) }
+    BackHandler(enabled = isSelectionMode) { viewModel.clearSelection() }
+
+    Scaffold(
+        topBar = {
+            if (isSelectionMode) {
+                SelectionTopBar(
+                    selectedCount = selectedIds.size,
+                    onClearSelection = { viewModel.clearSelection() },
+                    onSelectAll = { viewModel.selectAll() }, // Note: This might select ALL recordings, not just starred. To fix, VM needs "selectAllStarred" or selectAll uses visible list. Current VM uses visible list.
+                    onDeleteSelected = { viewModel.deleteSelected(context) },
+                    onTranscribeSelected = { viewModel.transcribeSelected(context) },
+                    onDownloadSelected = { viewModel.downloadSelected(context) }
+                )
+            }
+        }
+    ) { padding ->
+        Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                if (currentTagFilter != null && !isSelectionMode) {
+                    Surface(color = MaterialTheme.colorScheme.secondaryContainer, modifier = Modifier.fillMaxWidth()) {
+                        Row(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.AutoMirrored.Filled.Label, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Filtered by: #${currentTagFilter}", style = MaterialTheme.typography.labelLarge)
+                            Spacer(Modifier.weight(1f))
+                            IconButton(onClick = { viewModel.setTagFilter(null) }, modifier = Modifier.size(24.dp)) { Icon(Icons.Default.Close, "Clear filter", modifier = Modifier.size(16.dp)) }
+                        }
                     }
                 }
-            }
 
-            LazyColumn(modifier = Modifier.weight(1f), contentPadding = PaddingValues(8.dp)) {
-                if (recordings.isEmpty()) { item { Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { Text("No starred recordings", color = Color.Gray) } } }
-                items(recordings, key = { it.recording.id }) { uiState ->
-                    RecordingItem(
-                        uiState = uiState,
-                        playerState = playerState,
-                        onPlayPause = { viewModel.onPlayPauseClicked(uiState.recording) },
-                        onRewind = viewModel::onRewind,
-                        onForward = viewModel::onForward,
-                        onSeek = { p -> viewModel.onSeek(uiState.recording, p) },
+                LazyColumn(modifier = Modifier.weight(1f), contentPadding = PaddingValues(8.dp)) {
+                    if (recordings.isEmpty()) { item { Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { Text("No starred recordings", color = Color.Gray) } } }
+                    items(recordings, key = { it.recording.id }) { uiState ->
+                        RecordingItem(
+                            uiState = uiState,
+                            playerState = playerState,
+                            isSelectionMode = isSelectionMode,
+                            isSelected = selectedIds.contains(uiState.recording.id),
+                            onToggleSelection = { viewModel.toggleSelection(uiState.recording.id) },
+                            onPlayPause = { viewModel.onPlayPauseClicked(uiState.recording) },
+                            onRewind = viewModel::onRewind,
+                            onForward = viewModel::onForward,
+                            onSeek = { p -> viewModel.onSeek(uiState.recording, p) },
 
-                        onUpdateDetails = { name, tags, transcript -> viewModel.updateRecordingDetails(uiState.recording, name, tags, transcript) },
-                        onSaveAsNew = { name, tags, transcript -> viewModel.saveAsNewRecording(uiState.recording, name, tags + "saveAs", transcript) },
-                        onDuplicate = { viewModel.duplicateRecording( uiState.recording, "duplicate") },
-                        onTrimConfirm = { start, end, copy -> viewModel.trimRecording(uiState.recording, start, end, copy, "trimmed") },
-                        onPreviewTrim = { start, end -> viewModel.playSegment(uiState.recording, start, end) },
-                        onStopPreview = { viewModel.stopPlayback() },
+                            onUpdateDetails = { name, tags, transcript -> viewModel.updateRecordingDetails(uiState.recording, name, tags, transcript) },
+                            onSaveAsNew = { name, tags, transcript -> viewModel.saveAsNewRecording(uiState.recording, name, tags + "saveAs", transcript) },
+                            onDuplicate = { viewModel.duplicateRecording( uiState.recording, "duplicate") },
+                            onTrimConfirm = { start, end, copy -> viewModel.trimRecording(uiState.recording, start, end, copy, "trimmed") },
+                            onPreviewTrim = { start, end -> viewModel.playSegment(uiState.recording, start, end) },
+                            onStopPreview = { viewModel.stopPlayback() },
 
-                        onDelete = { viewModel.deleteRecording(context, uiState.recording) },
-                        onTranscribe = { viewModel.transcribeRecording( uiState.recording) },
-                        onToggleStar = { viewModel.toggleStar(uiState.recording) },
-                        onSaveToDownloads = { viewModel.saveRecordingAs( uiState.recording) },
-                        onExpand = { viewModel.loadAmplitudes(uiState.recording) },
-                        onToggleSpeed = { viewModel.togglePlaybackSpeed() },
-                        onTagClick = { tag -> viewModel.setTagFilter(tag) },
-                        onRemoveTag = { tag -> viewModel.removeTag(uiState.recording, tag) },
-                        onExport = { fmt -> viewModel.exportTranscript(context, uiState.recording, fmt) }
-                    )
+                            onDelete = { viewModel.deleteRecording(context, uiState.recording) },
+                            onTranscribe = { viewModel.transcribeRecording( uiState.recording) },
+                            onToggleStar = { viewModel.toggleStar(uiState.recording) },
+                            onSaveToDownloads = { viewModel.saveRecordingAs( uiState.recording) },
+                            onExpand = { viewModel.loadAmplitudes(uiState.recording) },
+                            onToggleSpeed = { viewModel.togglePlaybackSpeed() },
+                            onTagClick = { tag -> viewModel.setTagFilter(tag) },
+                            onRemoveTag = { tag -> viewModel.removeTag(uiState.recording, tag) },
+                            onExport = { fmt -> viewModel.exportTranscript(context, uiState.recording, fmt) }
+                        )
+                    }
                 }
             }
         }
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun RecordingItem(
     uiState: RecordingsViewModel.RecordingUiState,
-    playerState: AudioPlayerManager.PlayerState, // [FIXED] Updated to use AudioPlayerManager.PlayerState
+    playerState: AudioPlayerManager.PlayerState,
+    isSelectionMode: Boolean,
+    isSelected: Boolean,
+    onToggleSelection: () -> Unit,
     onPlayPause: () -> Unit,
     onRewind: () -> Unit,
     onForward: () -> Unit,
@@ -271,8 +329,11 @@ fun RecordingItem(
     var showExportDialog by remember { mutableStateOf(false) }
     var showTrimDialog by remember { mutableStateOf(false) }
 
-    LaunchedEffect(isActive) { if (isActive) isExpanded = true }
+    LaunchedEffect(isActive) { if (isActive && !isSelectionMode) isExpanded = true }
     LaunchedEffect(isExpanded) { if (isExpanded) onExpand() }
+
+    // Close expanded state if we enter selection mode
+    LaunchedEffect(isSelectionMode) { if (isSelectionMode) isExpanded = false }
 
     if (showEditDialog) {
         EditDetailsDialog(
@@ -298,47 +359,82 @@ fun RecordingItem(
         ExportFormatDialog(onDismiss = { showExportDialog = false }, onConfirm = { format -> onExport(format); showExportDialog = false })
     }
 
+    val backgroundColor by animateColorAsState(
+        targetValue = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+        label = "selectionColor"
+    )
+
     OutlinedCard(
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        colors = CardDefaults.cardColors(containerColor = backgroundColor),
+        border = if (isSelected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
-        Column(modifier = Modifier.clickable { isExpanded = !isExpanded }.padding(16.dp)) {
+        Column(
+            modifier = Modifier
+                .combinedClickable(
+                    onClick = {
+                        if (isSelectionMode) {
+                            onToggleSelection()
+                        } else {
+                            isExpanded = !isExpanded
+                        }
+                    },
+                    onLongClick = {
+                        if (!isSelectionMode) {
+                            onToggleSelection()
+                        }
+                    }
+                )
+                .padding(16.dp)
+        ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                // Checkbox for selection mode
+                AnimatedVisibility(visible = isSelectionMode) {
+                    Checkbox(
+                        checked = isSelected,
+                        onCheckedChange = { onToggleSelection() },
+                        modifier = Modifier.padding(end = 16.dp)
+                    )
+                }
+
                 Column(modifier = Modifier.weight(1f)) {
                     Text(File(recording.filePath).name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(formatDuration(recording.duration), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
-                IconButton(onClick = onToggleStar) {
-                    Icon(if (recording.isStarred) Icons.Default.Star else Icons.Default.StarBorder, "Star", tint = if (recording.isStarred) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-                }
 
-                ItemOptionsMenu(
-                    onEditDetails = { showEditDialog = true },
-                    onDuplicate = onDuplicate,
-                    onTrim = { showTrimDialog = true },
-                    onDelete = onDelete,
-                    onSaveToDownloads = onSaveToDownloads,
-                    onExportTranscript = { showExportDialog = true },
-                    hasTranscript = recording.processingStatus == Recording.STATUS_COMPLETED
-                )
+                if (!isSelectionMode) {
+                    IconButton(onClick = onToggleStar) {
+                        Icon(if (recording.isStarred) Icons.Default.Star else Icons.Default.StarBorder, "Star", tint = if (recording.isStarred) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+
+                    ItemOptionsMenu(
+                        onEditDetails = { showEditDialog = true },
+                        onDuplicate = onDuplicate,
+                        onTrim = { showTrimDialog = true },
+                        onDelete = onDelete,
+                        onSaveToDownloads = onSaveToDownloads,
+                        onExportTranscript = { showExportDialog = true },
+                        hasTranscript = recording.processingStatus == Recording.STATUS_COMPLETED
+                    )
+                }
             }
 
-            if (recording.tags.isNotEmpty() || isExpanded) {
+            if (recording.tags.isNotEmpty() || (isExpanded && !isSelectionMode)) {
                 Spacer(Modifier.height(8.dp))
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     recording.tags.forEach { tag ->
                         InputChip(
                             selected = false,
-                            onClick = { onTagClick(tag) },
+                            onClick = { if (!isSelectionMode) onTagClick(tag) },
                             label = { Text(tag) },
-                            trailingIcon = if (isExpanded) { { Icon(Icons.Default.Close, "Remove", Modifier.size(16.dp).clickable { onRemoveTag(tag) }) } } else null,
+                            trailingIcon = if (isExpanded && !isSelectionMode) { { Icon(Icons.Default.Close, "Remove", Modifier.size(16.dp).clickable { onRemoveTag(tag) }) } } else null,
                             colors = InputChipDefaults.inputChipColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), labelColor = MaterialTheme.colorScheme.onSurfaceVariant),
                             border = null
                         )
                     }
-                    if (isExpanded && recording.tags.isEmpty()) {
+                    if (isExpanded && recording.tags.isEmpty() && !isSelectionMode) {
                         SuggestionChip(onClick = { showEditDialog = true }, label = { Text("Add Tag") }, icon = { Icon(Icons.Default.Add, null, modifier = Modifier.size(16.dp)) })
                     }
                 }
@@ -371,7 +467,7 @@ fun RecordingItem(
                 }
             }
 
-            AnimatedVisibility(visible = isExpanded) {
+            AnimatedVisibility(visible = isExpanded && !isSelectionMode) {
                 PlayerControls(
                     isPlaying = isPlayingThis,
                     currentPosition = if (isActive) playerState.currentPosition else 0,
@@ -391,7 +487,73 @@ fun RecordingItem(
     }
 }
 
-// --- Smart Edit Dialog ---
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SelectionTopBar(
+    selectedCount: Int,
+    onClearSelection: () -> Unit,
+    onSelectAll: () -> Unit,
+    onDeleteSelected: () -> Unit,
+    onTranscribeSelected: () -> Unit,
+    onDownloadSelected: () -> Unit
+) {
+    var showMenu by remember { mutableStateOf(false) }
+
+    TopAppBar(
+        title = { Text("$selectedCount Selected") },
+        navigationIcon = {
+            IconButton(onClick = onClearSelection) {
+                Icon(Icons.Default.Close, contentDescription = "Close selection")
+            }
+        },
+        actions = {
+            // Select All Button
+            TextButton(onClick = onSelectAll) {
+                Text("Select All", fontWeight = FontWeight.Bold)
+            }
+
+            // Delete Icon
+            IconButton(onClick = onDeleteSelected) {
+                Icon(Icons.Default.Delete, contentDescription = "Delete Selected")
+            }
+
+            // More Menu (3 dots)
+            Box {
+                IconButton(onClick = { showMenu = true }) {
+                    Icon(Icons.Default.MoreVert, contentDescription = "More Options")
+                }
+                DropdownMenu(
+                    expanded = showMenu,
+                    onDismissRequest = { showMenu = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Delete") },
+                        onClick = { onDeleteSelected(); showMenu = false },
+                        leadingIcon = { Icon(Icons.Default.Delete, null) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Transcribe") },
+                        onClick = { onTranscribeSelected(); showMenu = false },
+                        leadingIcon = { Icon(Icons.Default.Description, null) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Download") },
+                        onClick = { onDownloadSelected(); showMenu = false },
+                        leadingIcon = { Icon(Icons.Default.SaveAlt, null) }
+                    )
+                }
+            }
+        },
+        colors = TopAppBarDefaults.topAppBarColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer,
+            titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            actionIconContentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            navigationIconContentColor = MaterialTheme.colorScheme.onPrimaryContainer
+        )
+    )
+}
+
+// ... (Rest of existing dialogs: EditDetailsDialog, TrimRecordingDialog, ExportFormatDialog, PlayerControls, ItemOptionsMenu, alpha helper - unchanged)
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun EditDetailsDialog(

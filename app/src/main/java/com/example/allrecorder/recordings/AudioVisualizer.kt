@@ -118,72 +118,92 @@ fun AudioVisualizer(
 
 private fun lerp(start: Float, stop: Float, amount: Float): Float = start + (stop - start) * amount
 
-/**
- * PLAYBACK Waveform / Scrubber
- * [IMPROVED] Supports Tap, Drag, AND Precision Scrubbing (Vertical Drag)
- */
 @Composable
 fun PlaybackWaveform(
     amplitudes: List<Int>,
-    progress: Float,
+    progress: Float, // 0f to 1f
     onSeek: (Float) -> Unit,
     modifier: Modifier = Modifier,
-    barColor: Color = MaterialTheme.colorScheme.primary
+    barColor: Color = MaterialTheme.colorScheme.primary,
+    playedColor: Color = MaterialTheme.colorScheme.tertiary
 ) {
     val density = LocalDensity.current
-    // Threshold to engage precision mode (drag down 50dp)
-    val precisionThresholdPx = with(density) { 50.dp.toPx() }
+
+    // Internal state to track if the user is currently scrubbing
+    var dragProgress by remember { mutableStateOf<Float?>(null) }
+
+    // [LOGIC] If dragging, show the drag position. If playing, show the player position.
+    val displayProgress = dragProgress ?: progress
+
+    val currentOnSeek by rememberUpdatedState(onSeek)
 
     Canvas(
         modifier = modifier
             .fillMaxSize()
             .pointerInput(Unit) {
+                val precisionThresholdPx = with(density) { 100.dp.toPx() } // Increased for better feel
+
                 awaitEachGesture {
                     val down = awaitFirstDown()
                     val width = size.width.toFloat()
-                    val initialY = down.position.y
 
-                    if (width > 0f) {
-                        // Initial seek
-                        onSeek((down.position.x / width).coerceIn(0f, 1f))
+                    if (width > 1f) {
+                        // 1. Calculate start position
+                        val startX = down.position.x
+                        val startY = down.position.y
+
+                        // 2. Initial seek to touch point
+                        val initialProgress = (startX / width).coerceIn(0f, 1f)
+                        dragProgress = initialProgress
+                        currentOnSeek(initialProgress)
                         down.consume()
-                    }
 
-                    var change = down
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val nextChange = event.changes.firstOrNull { it.id == change.id } ?: break
-                        if (!nextChange.pressed) break
+                        var currentDragX = startX
+                        var accumulatedProgress = initialProgress
 
-                        val currentX = nextChange.position.x
-                        val currentY = nextChange.position.y
+                        var change = down
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val nextChange = event.changes.firstOrNull { it.id == change.id }
 
-                        // [PRECISION SEEKING]
-                        // If user drags finger vertically away from bar, slow down seeking
-                        val verticalDist = abs(currentY - initialY)
-                        val sensitivity = if (verticalDist > precisionThresholdPx) {
-                            // Scale sensitivity based on distance.
-                            // At 50dp = 1.0x, at 200dp ~= 0.2x
-                            val factor = 1f - ((verticalDist - precisionThresholdPx) / (precisionThresholdPx * 4)).coerceIn(0f, 0.9f)
-                            factor
-                        } else {
-                            1f
-                        }
-
-                        if (width > 0f) {
-                            // We calculate delta from previous X to apply sensitivity
-                            val dx = currentX - change.position.x
-                            val currentProgress = progress // Note: This captures the progress passed in composition
-                            val newProgress = (currentProgress + (dx / width) * sensitivity).coerceIn(0f, 1f)
-
-                            // Only trigger seek if there was movement
-                            if (abs(dx) > 0.5f) {
-                                onSeek(newProgress)
+                            if (nextChange == null || !nextChange.pressed) {
+                                // Drag finished
+                                dragProgress = null
+                                break
                             }
-                        }
 
-                        nextChange.consume()
-                        change = nextChange
+                            val currentX = nextChange.position.x
+                            val currentY = nextChange.position.y
+
+                            // [FIX 1] Precision Math that never goes negative
+                            val verticalDist = abs(currentY - startY)
+
+                            // If user drags down, sensitivity drops from 100% to 10%
+                            val sensitivity = if (verticalDist > precisionThresholdPx) {
+                                val distanceOverThreshold = verticalDist - precisionThresholdPx
+                                // Decay formula: Smoothly reduce sensitivity
+                                val decay = (1f - (distanceOverThreshold / (precisionThresholdPx * 3)))
+                                decay.coerceIn(0.1f, 1f) // Clamp: Never go below 10% speed
+                            } else {
+                                1f
+                            }
+
+                            // [FIX 2] Use Delta accumulation
+                            val dx = currentX - change.position.x
+                            val changeAmount = (dx / width) * sensitivity
+
+                            accumulatedProgress = (accumulatedProgress + changeAmount).coerceIn(0f, 1f)
+
+                            // Update internal state (UI updates immediately)
+                            dragProgress = accumulatedProgress
+
+                            // Notify external listener (Player seeks)
+                            // Optimization: In a real app, you might want to debounce this call
+                            currentOnSeek(accumulatedProgress)
+
+                            nextChange.consume()
+                            change = nextChange
+                        }
                     }
                 }
             }
@@ -192,17 +212,20 @@ fun PlaybackWaveform(
         if (totalBars == 0) return@Canvas
 
         val effectiveBarWidth = size.width / totalBars
-        val spacing = effectiveBarWidth * 0.2f
+        val spacing = effectiveBarWidth * 0.25f // 25% spacing
         val drawBarWidth = effectiveBarWidth - spacing
 
         amplitudes.forEachIndexed { index, amplitude ->
-            val percent = amplitude / 100f
+            // Normalize amplitude to 0.0 - 1.0 range (assuming 100 is max in your list)
+            val percent = (amplitude / 100f).coerceIn(0.1f, 1f)
             val barHeight = size.height * percent
+
             val x = index * effectiveBarWidth
             val y = (size.height - barHeight) / 2
 
-            val isPlayed = (index.toFloat() / totalBars) <= progress
-            val color = if (isPlayed) barColor else barColor.copy(alpha = 0.5f)
+            // Use displayProgress (which respects dragging)
+            val isPlayed = (index.toFloat() / totalBars) <= displayProgress
+            val color = if (isPlayed) playedColor else barColor.copy(alpha = 0.5f)
 
             drawRoundRect(
                 color = color,

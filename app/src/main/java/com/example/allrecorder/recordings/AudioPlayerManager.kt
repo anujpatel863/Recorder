@@ -15,7 +15,7 @@ import javax.inject.Singleton
 
 @Singleton
 class AudioPlayerManager @Inject constructor(
-    @ApplicationContext private val context: Context
+    @param: ApplicationContext private val context: Context
 ) {
     data class PlayerState(
         val playingRecordingId: Long? = null,
